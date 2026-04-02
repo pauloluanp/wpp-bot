@@ -13,6 +13,6 @@ export const sessions = mysqlTable("sessions", {
   sessionId: varchar("session_id", { length: 255 }),
   sourceGroup: varchar("source_group", { length: 255 }),
   targetGroup: varchar("target_group", { length: 255 }),
-  status: boolean("status").default(true),
+  status: boolean("status").default(true) ,
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`),
 });

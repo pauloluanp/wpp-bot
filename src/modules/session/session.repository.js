@@ -14,14 +14,30 @@ export default class SessionRepository {
     });
   }
 
-  async stopSession(sessionId) {
+  async startSession(sessionId) {
     return this.db
-      .delete(sessions)
+      .update(sessions)
+      .set({ status: true })
       .where(eq(sessions.sessionId, sessionId));
   }
 
+  async stopSession(sessionId) {
+    return this.db
+      .update(sessions)
+      .set({ status: false })
+      .where(eq(sessions.sessionId, sessionId));
+  }
+
+  
+
   async listSessions() {
     return this.db.select().from(sessions);
+  }
+
+  async deleteSession(sessionId) {
+    return this.db
+      .delete(sessions)
+      .where(eq(sessions.sessionId, sessionId));
   }
 
   async updateSessionConfig(sessionId, sourceGroup, targetGroup) {

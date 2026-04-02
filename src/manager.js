@@ -1,6 +1,7 @@
 import makeWASocket, {
   useMultiFileAuthState,
-  DisconnectReason
+  DisconnectReason,
+  fetchLatestBaileysVersion
 } from '@whiskeysockets/baileys';
 import qrcode from 'qrcode-terminal';
 import path from 'path';
@@ -10,14 +11,31 @@ import P from 'pino';
 const sessions = new Map();
 const qrcodes = new Map();
 const sessionConfigs = new Map();
+const sessionStatus = new Map(); // Status das sessões: 'STARTING', 'CONNECTED', 'DISCONNECTED'
+const sessionSchedules = new Map(); // Controle de tempo de envio por sessão
 
-
+function deepCloneMessage(obj) {
+  if (obj === null || typeof obj !== 'object') return obj;
+  if (Buffer.isBuffer(obj)) return Buffer.from(obj);
+  if (obj instanceof Uint8Array) return new Uint8Array(obj);
+  if (Array.isArray(obj)) return obj.map(deepCloneMessage);
+  const cloned = {};
+  for (const key in obj) {
+    if (Object.prototype.hasOwnProperty.call(obj, key)) {
+      cloned[key] = deepCloneMessage(obj[key]);
+    }
+  }
+  return cloned;
+}
 
 export async function startSession(sessionId) {
   if (sessions.has(sessionId)) {
     console.log(`Sessão ${sessionId} já está ativa`);
     return;
   }
+  
+  sessionStatus.set(sessionId, 'STARTING');
+  
   const sessionPath = path.resolve(`./sessions/${sessionId}`);
 
 if (!fs.existsSync(sessionPath)) {
@@ -33,18 +51,16 @@ if (!fs.existsSync(sessionPath)) {
     sessionConfigs.set(sessionId, {
       ...existingConfig,
       sourceGroup: null,
-      targetGroup: null,
-      sourceGroupName: null,
-      targetGroupName: null
+      targetGroups: [],
+      sourceGroupName: null
     });
   } else {
     // Primeira vez, cria configuração padrão
     console.log(`🆕 [${sessionId}] Criando configuração inicial`);
     sessionConfigs.set(sessionId, {
       sourceGroup: null,
-      targetGroup: null,
+      targetGroups: [],
       sourceGroupName: null,
-      targetGroupName: null,
       sourceGroupPrefix: null,
       targetGroupPrefix: null,
       delayMs: 2 * 60 * 1000
@@ -53,10 +69,14 @@ if (!fs.existsSync(sessionPath)) {
 
 
   const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
+  const { version, isLatest } = await fetchLatestBaileysVersion();
+  console.log(`🔄 [${sessionId}] Usando WA v${version.join('.')} (isLatest: ${isLatest})`);
 
   const sock = makeWASocket({
     logger: P({ level: 'silent' }),
-    auth: state
+    auth: state,
+    version,
+    browser: ['Ubuntu', 'Chrome', '20.0.04']
   });
 
   sock.ev.on('creds.update', saveCreds);
@@ -71,6 +91,7 @@ if (!fs.existsSync(sessionPath)) {
   }
 
   if (connection === 'open') {
+  sessionStatus.set(sessionId, 'CONNECTED');
   console.log(`Sessão ${sessionId} conectada`);
   qrcodes.delete(sessionId);
 
@@ -87,6 +108,7 @@ if (!fs.existsSync(sessionPath)) {
 
 
   if (connection === 'close') {
+    sessionStatus.set(sessionId, 'DISCONNECTED');
     const reason = lastDisconnect?.error?.output?.statusCode;
     
     console.log(`\n❌ [${sessionId}] Desconectado. Código: ${reason}`);
@@ -101,9 +123,15 @@ if (!fs.existsSync(sessionPath)) {
     sessions.delete(sessionId);
     qrcodes.delete(sessionId);
 
-    // Tratamento específico para LOGGED OUT (401)
-    if (reason === DisconnectReason.loggedOut) {
-      console.log(`⚠️ [${sessionId}] Sessão inválida ou desconectada pelo celular.`);
+    // Desconexão intencional ou manual sem erro
+    if (reason === undefined || reason === DisconnectReason.intentional) {
+      console.log(`🛑 [${sessionId}] Conexão encerrada intencionalmente (stop/delete).`);
+      return;
+    }
+
+    // Tratamento específico para LOGGED OUT (401) e erros de sessão inválida (405)
+    if (reason === DisconnectReason.loggedOut || reason === 405) {
+      console.log(`⚠️ [${sessionId}] Sessão inválida ou desconectada pelo celular (Código: ${reason}).`);
       console.log(`🗑️ [${sessionId}] Apagando arquivos da sessão para gerar novo QR Code...`);
       
       const sessionDir = path.resolve(`./sessions/${sessionId}`);
@@ -129,65 +157,108 @@ if (!fs.existsSync(sessionPath)) {
 
 
   sock.ev.on('messages.upsert', async ({ messages }) => {
-  const msg = messages[0];
-  if (!msg.message) return;
+    for (const msg of messages) {
+      if (!msg.message) continue;
 
-  const from = msg.key.remoteJid;
-  const isGroup = from.endsWith('@g.us');
-  const isFromMe = msg.key.fromMe;
+      const from = msg.key.remoteJid;
+      const isGroup = from.endsWith('@g.us');
+      const isFromMe = msg.key.fromMe;
 
-  const config = getSessionConfig(sessionId);
-  if (!config || !config.sourceGroup || !config.targetGroup) {
-    console.log(`[${sessionId}] ⚠️  Configuração incompleta - grupos não configurados`);
-    return;
-  }
+      const config = getSessionConfig(sessionId);
+      if (!config || !config.sourceGroup || !config.targetGroups || config.targetGroups.length === 0) {
+        console.log(`[${sessionId}] ⚠️  Configuração incompleta - grupos não configurados`);
+        continue;
+      }
 
-  if (!isGroup) return;
-  if (!isFromMe) return;
-  if (from !== config.sourceGroup) return;
+      if (!isGroup) continue;
+      if (!isFromMe) continue;
+      if (from !== config.sourceGroup) continue;
 
-  const text =
-    msg.message.conversation ||
-    msg.message.extendedTextMessage?.text;
+      // Tenta extrair texto para log, se não houver será considerado mídia
+      const text =
+        msg.message.conversation ||
+        msg.message.extendedTextMessage?.text ||
+        msg.message.imageMessage?.caption ||
+        msg.message.videoMessage?.caption ||
+        '[Áudio/Mídia/Figurinha]';
 
-  if (!text) return;
+      const isMedia = 
+        msg.message.imageMessage || 
+        msg.message.videoMessage || 
+        msg.message.stickerMessage || 
+        msg.message.audioMessage || 
+        msg.message.documentMessage;
 
-  // Log detalhado da mensagem recebida
-  console.log('\n' + '='.repeat(60));
-  console.log(`📨 [${sessionId}] MENSAGEM RECEBIDA`);
-  console.log('='.repeat(60));
-  console.log(`📍 Grupo de Origem: ${config.sourceGroupName || 'Nome não disponível'}`);
-  console.log(`🆔 ID do Grupo: ${from}`);
-  console.log(`💬 Mensagem: "${text}"`);
-  console.log('='.repeat(60) + '\n');
+      // Só ignora se não tiver texto nenhum nem mídia reconhecida
+      if (!msg.message.conversation && !msg.message.extendedTextMessage && !isMedia) continue;
 
-  console.log(`[${sessionId}] ⏳ Aguardando ${config.delayMs / 1000}s antes de encaminhar...`);
+      // Log detalhado da mensagem recebida
+      console.log('\n' + '='.repeat(60));
+      console.log(`📨 [${sessionId}] MENSAGEM RECEBIDA`);
+      console.log('='.repeat(60));
+      console.log(`📍 Grupo de Origem: ${config.sourceGroupName || 'Nome não disponível'}`);
+      console.log(`🆔 ID do Grupo: ${from}`);
+      console.log(`💬 Mensagem: "${text}"`);
+      console.log('='.repeat(60) + '\n');
+      
+      // Clona a mensagem IMEDIATAMENTE e a congela. Baileys sofre mutação de objetos em cache 
+      // via processamentos em background (ex: receipts), o que destrói a mensagem antes do nosso setTimeout rodar.
+      const frozenMsg = deepCloneMessage(msg);
 
-  setTimeout(async () => {
-  try {
-    console.log(`[${sessionId}] ⌨️  Simulando digitação no grupo destino...`);
+      const now = Date.now();
+      let lastTime = sessionSchedules.get(sessionId) || now;
+      if (lastTime < now) lastTime = now;
+      
+      // Diferença de tempo aleatória de 1 a 7 minutos (em ms)
+      const minGap = 1 * 60 * 1000;
+      const maxGap = 7 * 60 * 1000;
+      const gap = Math.floor(Math.random() * (maxGap - minGap + 1)) + minGap;
+      
+      let nextTime = lastTime + gap;
+      
+      // Limite máximo de 20 minutos a partir de agora
+      const maxWait = 19.5 * 60 * 1000; // Segurança (menos de 20min)
+      if (nextTime > now + maxWait) {
+        nextTime = now + maxWait;
+      }
+      
+      sessionSchedules.set(sessionId, nextTime);
+      const delayMs = nextTime - now;
 
-    await simulateTyping(sock, config.targetGroup, 2000 + Math.random() * 2000);
+      console.log(`[${sessionId}] ⏳ Aguardando ${(delayMs / 60000).toFixed(2)} minutos antes de encaminhar...`);
 
-    await sock.sendMessage(config.targetGroup, { text });
+      setTimeout(async () => {
+        try {
+          for (const target of config.targetGroups) {
+            console.log(`[${sessionId}] ⌨️  Simulando digitação no grupo destino (${target.name})...`);
 
-    // Log detalhado do envio
-    console.log('\n' + '='.repeat(60));
-    console.log(`✅ [${sessionId}] MENSAGEM ENVIADA`);
-    console.log('='.repeat(60));
-    console.log(`📍 Grupo de Destino: ${config.targetGroupName || 'Nome não disponível'}`);
-    console.log(`🆔 ID do Grupo: ${config.targetGroup}`);
-    console.log(`💬 Mensagem: "${text}"`);
-    console.log('='.repeat(60) + '\n');
-  } catch (err) {
-    console.error('\n' + '='.repeat(60));
-    console.error(`❌ [${sessionId}] ERRO AO ENVIAR MENSAGEM`);
-    console.error('='.repeat(60));
-    console.error('Erro:', err);
-    console.error('='.repeat(60) + '\n');
-  }
-}, config.delayMs);
-});
+            await simulateTyping(sock, target.id, 2000 + Math.random() * 2000);
+
+            // Clona a mensagem congelada para evitar que o Baileys a corrompa ao enviar para o próximo alvo do loop
+            const targetMsgCopy = deepCloneMessage(frozenMsg);
+
+            // Usa a funcionalidade nativa de forward do Baileys para repassar qualquer tipo de mensagem com perfeição
+            await sock.sendMessage(target.id, { forward: targetMsgCopy });
+
+            // Log detalhado do envio
+            console.log('\n' + '='.repeat(60));
+            console.log(`✅ [${sessionId}] MENSAGEM ENVIADA (Atraso: ${(delayMs / 60000).toFixed(2)} min)`);
+            console.log('='.repeat(60));
+            console.log(`📍 Grupo de Destino: ${target.name || 'Nome não disponível'}`);
+            console.log(`🆔 ID do Grupo: ${target.id}`);
+            console.log(`💬 Mensagem: "${text}"`);
+            console.log('='.repeat(60) + '\n');
+          }
+        } catch (err) {
+          console.error('\n' + '='.repeat(60));
+          console.error(`❌ [${sessionId}] ERRO AO ENVIAR MENSAGEM`);
+          console.error('='.repeat(60));
+          console.error('Erro:', err);
+          console.error('='.repeat(60) + '\n');
+        }
+      }, delayMs);
+    }
+  });
 
   sessions.set(sessionId, sock);
 }
@@ -205,8 +276,28 @@ export function listSessions() {
   return [...sessions.keys()];
 }
 
-export function getQRCode(sessionId) {
-  return qrcodes.get(sessionId) || null;
+export async function getQRCode(sessionId, timeoutMs = 15000) {
+  console.log(`[${sessionId}] 📡 Requisição QR via HTTP recebida...`);
+  const start = Date.now();
+  
+  // Aguarda até o timeout para o QR code ser gerado
+  while (Date.now() - start < timeoutMs) {
+    if (sessionStatus.get(sessionId) === 'CONNECTED') {
+      console.log(`[${sessionId}] 📡 Aviso: Sessão já conectada, retonando conectado em vez de QR.`);
+      return { status: 'CONNECTED' }; // Informamos que já conectou ao invés de null genérico
+    }
+
+    if (qrcodes.has(sessionId)) {
+      console.log(`[${sessionId}] 📡 Escutador devolvendo QR Code.`);
+      return { qr: qrcodes.get(sessionId) };
+    }
+    
+    // Pequeno delay para não travar a thread
+    await new Promise(resolve => setTimeout(resolve, 500));
+  }
+  
+  console.log(`[${sessionId}] 📡 Escutador de QR expirado após 15s.`);
+  return null;
 }
 
 export function updateSessionConfig(sessionId, config) {
@@ -217,9 +308,8 @@ export function updateSessionConfig(sessionId, config) {
     console.log(`📝 [${sessionId}] Criando configuração antes da sessão iniciar`);
     sessionConfigs.set(sessionId, {
       sourceGroup: null,
-      targetGroup: null,
+      targetGroups: [],
       sourceGroupName: null,
-      targetGroupName: null,
       sourceGroupPrefix: null,
       targetGroupPrefix: null,
       delayMs: 2 * 60 * 1000,
@@ -260,17 +350,17 @@ async function resolveGroupsByPrefix(sock, sessionId) {
     g.subject?.toLowerCase().startsWith(config.sourceGroupPrefix.toLowerCase())
   );
 
-  const target = groups.find(g =>
+  const targets = groups.filter(g =>
     g.subject?.toLowerCase().startsWith(config.targetGroupPrefix.toLowerCase())
   );
 
-  if (!source || !target) {
+  if (!source || targets.length === 0) {
     console.log('\n' + '='.repeat(60));
     console.log(`❌ [${sessionId}] GRUPOS NÃO ENCONTRADOS`);
     console.log('='.repeat(60));
     console.log(`Procurando por:`);
     console.log(`   📤 Origem: prefixo "${config.sourceGroupPrefix}" ${!source ? '❌ NÃO ENCONTRADO' : '✅'}`);
-    console.log(`   📥 Destino: prefixo "${config.targetGroupPrefix}" ${!target ? '❌ NÃO ENCONTRADO' : '✅'}`);
+    console.log(`   📥 Destino: prefixo "${config.targetGroupPrefix}" ${targets.length === 0 ? '❌ NÃO ENCONTRADO' : `✅ Encontrados: ${targets.length}`}`);
     console.log(`\nGrupos disponíveis (${groups.length}):`);
     groups.forEach((g, idx) => {
       console.log(`   ${idx + 1}. "${g.subject}" (ID: ${g.id})`);
@@ -282,9 +372,8 @@ async function resolveGroupsByPrefix(sock, sessionId) {
   sessionConfigs.set(sessionId, {
     ...config,
     sourceGroup: source.id,
-    targetGroup: target.id,
     sourceGroupName: source.subject,
-    targetGroupName: target.subject
+    targetGroups: targets.map(t => ({ id: t.id, name: t.subject }))
   });
 
   console.log('\n' + '='.repeat(60));
@@ -292,7 +381,23 @@ async function resolveGroupsByPrefix(sock, sessionId) {
   console.log('='.repeat(60));
   console.log(`📤 Grupo de Origem: ${source.subject}`);
   console.log(`   ID: ${source.id}`);
-  console.log(`📥 Grupo de Destino: ${target.subject}`);
-  console.log(`   ID: ${target.id}`);
+  console.log(`📥 Grupos de Destino (${targets.length}):`);
+  targets.forEach((t, idx) => {
+    console.log(`   ${idx + 1}. ${t.subject} (ID: ${t.id})`);
+  });
   console.log('='.repeat(60) + '\n');
+}
+
+export function deleteSession(sessionId) {
+  const sessionDir = path.resolve(`./sessions/${sessionId}`);
+  if (fs.existsSync(sessionDir)) {
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+    console.log(`✅ [${sessionId}] Pasta da sessão limpa.`);
+  }
+  sessions.delete(sessionId);
+  qrcodes.delete(sessionId);
+  sessionConfigs.delete(sessionId);
+  sessionSchedules.delete(sessionId);
+
+  return { ok: true };
 }

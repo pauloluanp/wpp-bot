@@ -5,53 +5,110 @@ export default class SessionController {
 
   createSession = async (req, res) => {
     const { sessionId, sourceGroupPrefix, targetGroupPrefix } = req.body;
+    
+    if (!sessionId) {
+      return res.status(400).json({ error: 'sessionId obrigatório' });
+    }
 
-    const session = await this.sessionService.createSession(
-      sessionId,
-      sourceGroupPrefix,
-      targetGroupPrefix
-    );
+    try {
+      const session = await this.sessionService.createSession(
+        sessionId,
+        sourceGroupPrefix,
+        targetGroupPrefix
+      );
+      return res.json(session);
+    } catch (error) {
+      return res.status(500).json({ error: error.message });
+    }
+  };
 
-    return res.json(session);
+  startSession = async (req, res) => {
+    const { id: sessionId } = req.params;
+    try {
+      const session = await this.sessionService.startSession(sessionId);
+      return res.json(session);
+    } catch (error) {
+      return res.status(500).json({ error: error.message });
+    }
   };
 
   stopSession = async (req, res) => {
-    const { sessionId } = req.params;
-    const session = await this.sessionService.stopSession(sessionId);
-    return res.json(session);
+    const { id: sessionId } = req.params;
+    try {
+      const session = await this.sessionService.stopSession(sessionId);
+      return res.json(session);
+    } catch (error) {
+       return res.status(500).json({ error: error.message });
+    }
   };
 
   listSessions = async (req, res) => {
-    const sessions = await this.sessionService.listSessions();
-    
-    const total = sessions.length;
-    const active = sessions.filter(s => s.status).length;
-    const inactive = total - active;
+    try {
+      const sessions = await this.sessionService.listSessions();
+      
+      const total = sessions.length;
+      const active = sessions.filter(s => s.status).length;
+      const inactive = total - active;
 
-    return res.json({
-      total,
-      active,
-      inactive,
-      data: sessions
-    });
+      return res.json({
+        total,
+        active,
+        inactive,
+        data: sessions
+      });
+    } catch (error) {
+      return res.status(500).json({ error: error.message });
+    }
+  };
+
+  deleteSession = async (req, res) => {
+    const { id: sessionId } = req.params;
+    try {
+      const session = await this.sessionService.deleteSession(sessionId);
+      return res.json(session);
+    } catch (error) {
+      return res.status(500).json({ error: error.message });
+    }
   };
 
   getQRCode = async (req, res) => {
-    const { sessionId } = req.params;
-    const qrCode = await this.sessionService.getQRCode(sessionId);
-    return res.json(qrCode);
+    const { id: sessionId } = req.params;
+    try {
+      const result = await this.sessionService.getQRCode(sessionId);
+      
+      if (!result) {
+        return res.status(404).json({
+          error: 'Timeout. QR Code não foi gerado a tempo, tente novamente.'
+        });
+      }
+
+      if (result.status === 'CONNECTED') {
+        return res.status(400).json({
+          error: 'A sessão já está conectada. Crie uma nova sessão se desejar escanear novamente.'
+        });
+      }
+
+      return res.json({ qr: result.qr });
+    } catch (error) {
+       return res.status(500).json({ error: error.message });
+    }
   };
 
   updateSessionConfig = async (req, res) => {
-    const { sessionId } = req.params;
-    const { sourceGroup, targetGroup } = req.body;
+    const { id: sessionId } = req.params;
+    const { sourceGroup, targetGroup, delayMs } = req.body;
 
-    const session = await this.sessionService.updateSessionConfig(
-      sessionId,
-      sourceGroup,
-      targetGroup
-    );
+    try {
+      const session = await this.sessionService.updateSessionConfig(
+        sessionId,
+        sourceGroup,
+        targetGroup,
+        delayMs
+      );
 
-    return res.json(session);
+      return res.json(session);
+    } catch (error) {
+      return res.status(500).json({ error: error.message });
+    }
   };
 }
