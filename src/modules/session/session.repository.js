@@ -10,7 +10,8 @@ export default class SessionRepository {
     return this.db.insert(sessions).values({
       sessionId,
       sourceGroup: sourceGroupPrefix,
-    targetGroup: targetGroupPrefix,
+      targetGroup: targetGroupPrefix,
+      status: false
     });
   }
 

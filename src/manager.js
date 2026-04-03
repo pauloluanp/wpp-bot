@@ -7,6 +7,9 @@ import qrcode from 'qrcode-terminal';
 import path from 'path';
 import fs from 'fs';
 import P from 'pino';
+import { db } from './db/index.js';
+import { sessions as dbSessions } from './db/schema.js';
+import { eq } from 'drizzle-orm';
 
 const sessions = new Map();
 const qrcodes = new Map();
@@ -95,6 +98,9 @@ if (!fs.existsSync(sessionPath)) {
   sessionStatus.set(sessionId, 'CONNECTED');
   console.log(`Sessão ${sessionId} conectada`);
   qrcodes.delete(sessionId);
+  
+  // Atualiza BD
+  db.update(dbSessions).set({ status: true }).where(eq(dbSessions.sessionId, sessionId)).catch(err => console.error("Erro BD open:", err));
 
   const config = sessionConfigs.get(sessionId);
   if (config?.sourceGroupPrefix && config?.targetGroupPrefix) {
@@ -112,6 +118,9 @@ if (!fs.existsSync(sessionPath)) {
     sessionStatus.set(sessionId, 'DISCONNECTED');
     const reason = lastDisconnect?.error?.output?.statusCode;
     
+    // Atualiza BD
+    db.update(dbSessions).set({ status: false }).where(eq(dbSessions.sessionId, sessionId)).catch(err => console.error("Erro BD close:", err));
+
     console.log(`\n❌ [${sessionId}] Desconectado. Código: ${reason}`);
 
     // Limpa referências em memória

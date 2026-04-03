@@ -35,7 +35,6 @@ export default class SessionService {
 
         startSession(sessionId);
 
-        await this.sessionRepository.startSession(sessionId);
         return { ok: true };
     }
 
