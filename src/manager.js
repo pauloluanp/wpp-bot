@@ -13,6 +13,7 @@ const qrcodes = new Map();
 const sessionConfigs = new Map();
 const sessionStatus = new Map(); // Status das sessões: 'STARTING', 'CONNECTED', 'DISCONNECTED'
 const sessionSchedules = new Map(); // Controle de tempo de envio por sessão
+const pendingMessages = new Map(); // Controle de respostas (enviar/encerrar) com a estrutura: Map<stanzaId, {timerId, forceSend, sessionId}>
 
 function deepCloneMessage(obj) {
   if (obj === null || typeof obj !== 'object') return obj;
@@ -182,6 +183,34 @@ if (!fs.existsSync(sessionPath)) {
         msg.message.videoMessage?.caption ||
         '[Áudio/Mídia/Figurinha]';
 
+      // Verifica se é uma resposta e contém comando
+      const contextInfo = msg.message.extendedTextMessage?.contextInfo || 
+                          msg.message.imageMessage?.contextInfo || 
+                          msg.message.videoMessage?.contextInfo;
+
+      if (contextInfo && contextInfo.stanzaId) {
+        const repliedId = contextInfo.stanzaId;
+        const command = text.trim().toLowerCase();
+
+        if (command === 'enviar' || command === 'encerrar') {
+           const pending = pendingMessages.get(repliedId);
+           if (pending && pending.sessionId === sessionId) {
+               clearTimeout(pending.timerId);
+               if (command === 'enviar') {
+                   console.log(`\n[${sessionId}] 🚀 FORÇANDO ENVIO IMEDIATO da mensagem ${repliedId}`);
+                   pendingMessages.delete(repliedId);
+                   await pending.forceSend(); // executa o envio agora
+               } else if (command === 'encerrar') {
+                   console.log(`\n[${sessionId}] 🛑 CANCELANDO ENVIO da mensagem ${repliedId}`);
+                   pendingMessages.delete(repliedId);
+               }
+           } else {
+               console.log(`\n[${sessionId}] ⚠️ Comando "${command}" ignorado: mensagem original já enviada ou não encontrada.`);
+           }
+           continue; // Ignora esta mensagem de comando para não ser agendada/encaminhada também
+        }
+      }
+
       const isMedia = 
         msg.message.imageMessage || 
         msg.message.videoMessage || 
@@ -225,9 +254,10 @@ if (!fs.existsSync(sessionPath)) {
       sessionSchedules.set(sessionId, nextTime);
       const delayMs = nextTime - now;
 
-      console.log(`[${sessionId}] ⏳ Aguardando ${(delayMs / 60000).toFixed(2)} minutos antes de encaminhar...`);
+      console.log(`[${sessionId}] ⏳ Aguardando ${(delayMs / 60000).toFixed(2)} minutos antes de encaminhar... (ID: ${msg.key.id})`);
 
-      setTimeout(async () => {
+      const sendRoutine = async () => {
+        pendingMessages.delete(msg.key.id); // Remove da fila já que vai enviar agora
         try {
           for (const target of config.targetGroups) {
             console.log(`[${sessionId}] ⌨️  Simulando digitação no grupo destino (${target.name})...`);
@@ -242,7 +272,7 @@ if (!fs.existsSync(sessionPath)) {
 
             // Log detalhado do envio
             console.log('\n' + '='.repeat(60));
-            console.log(`✅ [${sessionId}] MENSAGEM ENVIADA (Atraso: ${(delayMs / 60000).toFixed(2)} min)`);
+            console.log(`✅ [${sessionId}] MENSAGEM ENVIADA (ID Original: ${msg.key.id})`);
             console.log('='.repeat(60));
             console.log(`📍 Grupo de Destino: ${target.name || 'Nome não disponível'}`);
             console.log(`🆔 ID do Grupo: ${target.id}`);
@@ -256,7 +286,15 @@ if (!fs.existsSync(sessionPath)) {
           console.error('Erro:', err);
           console.error('='.repeat(60) + '\n');
         }
-      }, delayMs);
+      };
+
+      const timerId = setTimeout(sendRoutine, delayMs);
+      
+      pendingMessages.set(msg.key.id, {
+          timerId,
+          forceSend: sendRoutine,
+          sessionId
+      });
     }
   });
 
