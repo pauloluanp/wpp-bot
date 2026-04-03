@@ -1,15 +1,15 @@
-import { mysqlTable, int, varchar, timestamp, boolean } from "drizzle-orm/mysql-core";
+import { pgTable, serial, varchar, timestamp, boolean, integer } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 
-export const users = mysqlTable("users", {
-  id: int("id").primaryKey().autoincrement(),
+export const users = pgTable("users", {
+  id: serial("id").primaryKey(),
   name: varchar("name", { length: 255 }),
   email: varchar("email", { length: 255 }),
-  age: int("age"),
+  age: integer("age"),
 });
 
-export const sessions = mysqlTable("sessions", {
-  id: int("id").primaryKey().autoincrement(),
+export const sessions = pgTable("sessions", {
+  id: serial("id").primaryKey(),
   sessionId: varchar("session_id", { length: 255 }),
   sourceGroup: varchar("source_group", { length: 255 }),
   targetGroup: varchar("target_group", { length: 255 }),
