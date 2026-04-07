@@ -244,20 +244,30 @@ if (!fs.existsSync(sessionPath)) {
       const frozenMsg = deepCloneMessage(msg);
 
       const now = Date.now();
-      let lastTime = sessionSchedules.get(sessionId) || now;
-      if (lastTime < now) lastTime = now;
       
-      // Diferença de tempo aleatória de 1 a 7 minutos (em ms)
+      const msIn15Mins = 15 * 60 * 1000;
+      const currentQuarterStart = Math.floor(now / msIn15Mins) * msIn15Mins;
+      const nextQuarterStart = currentQuarterStart + msIn15Mins;
+      const nextQuarterEnd = nextQuarterStart + msIn15Mins;
+
+      let lastTime = sessionSchedules.get(sessionId) || 0;
+      
+      if (lastTime < nextQuarterStart) {
+        lastTime = nextQuarterStart;
+      }
+      
       const minGap = 1 * 60 * 1000;
-      const maxGap = 7 * 60 * 1000;
+      const maxGap = 4 * 60 * 1000;
       const gap = Math.floor(Math.random() * (maxGap - minGap + 1)) + minGap;
       
       let nextTime = lastTime + gap;
       
-      // Limite máximo de 20 minutos a partir de agora
-      const maxWait = 19.5 * 60 * 1000; // Segurança (menos de 20min)
-      if (nextTime > now + maxWait) {
-        nextTime = now + maxWait;
+      if (nextTime > nextQuarterEnd - 10000) {
+        nextTime = nextQuarterEnd - 10000;
+      }
+      
+      if (nextTime <= lastTime) {
+        nextTime = lastTime + 5000 + Math.floor(Math.random() * 5000);
       }
       
       sessionSchedules.set(sessionId, nextTime);
