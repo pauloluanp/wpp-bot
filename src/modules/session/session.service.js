@@ -1,4 +1,4 @@
-import { startSession, stopSession, getQRCode, updateSessionConfig, deleteSession } from '../../manager.js';
+import { startSession, stopSession, getQRCode, updateSessionConfig, deleteSession, getPendingMessages } from '../../manager.js';
 
 export default class SessionService {
     constructor(sessionRepository) {
@@ -83,5 +83,9 @@ export default class SessionService {
         });
 
         return this.sessionRepository.updateSessionConfig(sessionId, sourceGroup, targetGroup);
+    }
+
+    getPendingMessages(sessionId) {
+        return getPendingMessages(sessionId);
     }
 }

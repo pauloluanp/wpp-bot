@@ -16,4 +16,6 @@ router.get('/sessions/:id/qrcode', sessionController.getQRCode);
 
 router.post('/sessions/:id/config', sessionController.updateSessionConfig);
 
+router.get('/sessions/:id/pending', sessionController.getPendingMessages);
+
 export default router;

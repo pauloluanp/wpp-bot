@@ -111,4 +111,14 @@ export default class SessionController {
       return res.status(500).json({ error: error.message });
     }
   };
+
+  getPendingMessages = (req, res) => {
+    const { id: sessionId } = req.params;
+    try {
+      const pending = this.sessionService.getPendingMessages(sessionId);
+      return res.json({ pending });
+    } catch (error) {
+      return res.status(500).json({ error: error.message });
+    }
+  };
 }
