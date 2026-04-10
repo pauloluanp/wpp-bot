@@ -186,7 +186,7 @@ export async function startSession(sessionId) {
 
       const from = msg.key.remoteJid;
       const isGroup = from.endsWith("@g.us");
-      const isFromMe = msg.key.fromMe;
+      // const isFromMe = msg.key.fromMe;
 
       const config = getSessionConfig(sessionId);
       if (
@@ -202,7 +202,6 @@ export async function startSession(sessionId) {
       }
 
       if (!isGroup) continue;
-      if (!isFromMe) continue;
       if (from !== config.sourceGroup) continue;
 
       // Tenta extrair texto para log, se não houver será considerado mídia
