@@ -28,12 +28,10 @@ export default class SessionService {
         if (!existsSession || existsSession.length === 0) {
             throw new Error('Sessão não encontrada');
         }
-        const statusSession = existsSession[0].status;
-        if (statusSession) {
-            throw new Error('Sessão já ativa');
-        }
 
-        startSession(sessionId);
+        // Se a sessão já estiver ativa no banco, ainda assim chamamos o startSession no manager
+        // O manager se encarregará de verificar se ela já está rodando em memória
+        await startSession(sessionId);
 
         return { ok: true };
     }

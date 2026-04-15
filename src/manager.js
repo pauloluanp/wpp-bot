@@ -32,6 +32,32 @@ function deepCloneMessage(obj) {
   return cloned;
 }
 
+export async function resetAllSessionStatus() {
+  console.log("🧹 Resetando status de todas as sessões no banco de dados...");
+  try {
+    await db.update(dbSessions).set({ status: false });
+    console.log("✅ Todas as sessões marcadas como inativas.");
+  } catch (err) {
+    console.error("❌ Erro ao resetar status das sessões:", err);
+  }
+}
+
+export async function autoRestartSessions() {
+  console.log("🔄 Iniciando auto-restauração de sessões...");
+  try {
+    const allSessions = await db.select().from(dbSessions);
+    console.log(`Found ${allSessions.length} sessions to check.`);
+    for (const session of allSessions) {
+      console.log(`🚀 Auto-iniciando sessão: ${session.sessionId}`);
+      startSession(session.sessionId).catch((err) =>
+        console.error(`Erro ao auto-iniciar ${session.sessionId}:`, err),
+      );
+    }
+  } catch (err) {
+    console.error("❌ Erro na auto-restauração:", err);
+  }
+}
+
 export async function startSession(sessionId) {
   if (sessions.has(sessionId)) {
     console.log(`Sessão ${sessionId} já está ativa`);
@@ -46,23 +72,48 @@ export async function startSession(sessionId) {
     fs.mkdirSync(sessionPath, { recursive: true });
   }
 
-  // Preserva configurações existentes ou cria novas com valores padrão
-  const existingConfig = sessionConfigs.get(sessionId);
+  // Tenta recuperar configuração do Map ou do Banco de Dados
+  let config = sessionConfigs.get(sessionId);
 
-  if (existingConfig) {
-    // Se já existe config, preserva tudo e reseta apenas os IDs dos grupos
+  if (!config) {
+    console.log(`🔍 [${sessionId}] Buscando configuração no banco de dados...`);
+    try {
+      const dbResult = await db
+        .select()
+        .from(dbSessions)
+        .where(eq(dbSessions.sessionId, sessionId));
+
+      if (dbResult && dbResult.length > 0) {
+        const dbSession = dbResult[0];
+        config = {
+          sourceGroup: null,
+          targetGroups: [],
+          sourceGroupName: null,
+          sourceGroupPrefix: dbSession.sourceGroup,
+          targetGroupPrefix: dbSession.targetGroup,
+          delayMs: 2 * 60 * 1000,
+        };
+        console.log(`✅ [${sessionId}] Configuração carregada do banco.`);
+      }
+    } catch (err) {
+      console.error(`❌ [${sessionId}] Erro ao buscar config no banco:`, err);
+    }
+  }
+
+  if (config) {
+    // Se já existe config, preserva prefixos e reseta IDs dinâmicos de grupos
     console.log(
-      `🔄 [${sessionId}] Reiniciando sessão - preservando configurações existentes`,
+      `🔄 [${sessionId}] Iniciando sessão "${sessionId}" - usando prefixos: [${config.sourceGroupPrefix}] -> [${config.targetGroupPrefix}]`,
     );
     sessionConfigs.set(sessionId, {
-      ...existingConfig,
+      ...config,
       sourceGroup: null,
       targetGroups: [],
       sourceGroupName: null,
     });
   } else {
-    // Primeira vez, cria configuração padrão
-    console.log(`🆕 [${sessionId}] Criando configuração inicial`);
+    // Primeira vez absoluta, cria configuração padrão
+    console.log(`🆕 [${sessionId}] Criando configuração inicial padrão`);
     sessionConfigs.set(sessionId, {
       sourceGroup: null,
       targetGroups: [],
