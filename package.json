@@ -4,8 +4,8 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "dev": "node --max-old-space-size=4096 src/server.js",
-    "start": "node --max-old-space-size=4096 src/server.js",
+    "dev": "node --max-old-space-size=1024 src/server.js",
+    "start": "node --max-old-space-size=1024 src/server.js",
     "build": "npm run db:push",
     "db:generate": "drizzle-kit generate",
     "db:push": "drizzle-kit push",
