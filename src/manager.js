@@ -15,8 +15,11 @@ const sessions = new Map();
 const qrcodes = new Map();
 const sessionConfigs = new Map();
 const sessionStatus = new Map(); // Status das sessões: 'STARTING', 'CONNECTED', 'DISCONNECTED'
-const sessionSchedules = new Map(); // Controle de tempo de envio por sessão
+const sessionSchedules = new Map(); // Controle de tempo de envio: Map<sessionId, {lastTime, windowStart, count}>
 const pendingMessages = new Map(); // Controle de respostas (enviar/encerrar) com a estrutura: Map<stanzaId, {timerId, forceSend, sessionId}>
+
+const MSG_PER_WINDOW = 3;
+const WINDOW_MS = 15 * 60 * 1000;
 
 function deepCloneMessage(obj) {
   if (obj === null || typeof obj !== "object") return obj;
@@ -337,33 +340,45 @@ export async function startSession(sessionId) {
       const frozenMsg = deepCloneMessage(msg);
 
       const now = Date.now();
+      const nextQuarterStart = Math.ceil(now / WINDOW_MS) * WINDOW_MS;
 
-      const msIn15Mins = 15 * 60 * 1000;
-      const currentQuarterStart = Math.floor(now / msIn15Mins) * msIn15Mins;
-      const nextQuarterStart = currentQuarterStart + msIn15Mins;
-      const nextQuarterEnd = nextQuarterStart + msIn15Mins;
+      let schedule = sessionSchedules.get(sessionId) || {
+        lastTime: 0,
+        windowStart: nextQuarterStart,
+        count: 0,
+      };
 
-      let lastTime = sessionSchedules.get(sessionId) || 0;
-
-      if (lastTime < nextQuarterStart) {
-        lastTime = nextQuarterStart;
+      // Se passou o tempo da janela atual ou é uma nova sessão, reseta para a próxima janela disponível
+      if (now > schedule.windowStart + WINDOW_MS || schedule.lastTime === 0) {
+        schedule.windowStart = Math.max(nextQuarterStart, schedule.windowStart);
+        schedule.count = 0;
+        schedule.lastTime = schedule.windowStart;
       }
 
-      const minGap = 1 * 60 * 1000;
-      const maxGap = 4 * 60 * 1000;
+      // Se atingiu o limite da janela, pula para a próxima
+      if (schedule.count >= MSG_PER_WINDOW) {
+        schedule.windowStart += WINDOW_MS;
+        schedule.count = 0;
+        schedule.lastTime = schedule.windowStart;
+      }
+
+      // Calcula o próximo envio com um gap aleatório dentro da janela
+      const minGap = 2 * 60 * 1000; // Mínimo 2 min entre msgs dentro da mesma janela
+      const maxGap = 4 * 60 * 1000; // Máximo 4 min
       const gap = Math.floor(Math.random() * (maxGap - minGap + 1)) + minGap;
 
-      let nextTime = lastTime + gap;
+      let nextTime = schedule.lastTime + gap;
 
-      if (nextTime > nextQuarterEnd - 10000) {
-        nextTime = nextQuarterEnd - 10000;
+      // Garante que não ultrapasse o fim da janela atual de 15 min (deixa margem de 1 min)
+      const windowEnd = schedule.windowStart + WINDOW_MS - 60000;
+      if (nextTime > windowEnd) {
+        nextTime = windowEnd;
       }
 
-      if (nextTime <= lastTime) {
-        nextTime = lastTime + 5000 + Math.floor(Math.random() * 5000);
-      }
+      schedule.lastTime = nextTime;
+      schedule.count++;
+      sessionSchedules.set(sessionId, schedule);
 
-      sessionSchedules.set(sessionId, nextTime);
       const delayMs = nextTime - now;
 
       console.log(
