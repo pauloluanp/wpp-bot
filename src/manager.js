@@ -62,8 +62,9 @@ export async function autoRestartSessions() {
 }
 
 export async function startSession(sessionId) {
-  if (sessions.has(sessionId)) {
-    console.log(`Sessão ${sessionId} já está ativa`);
+  const currentStatus = sessionStatus.get(sessionId);
+  if (sessions.has(sessionId) || currentStatus === "STARTING") {
+    console.log(`[${sessionId}] ⚠️ Sessão já está ativa ou em processo de inicialização.`);
     return;
   }
 
@@ -146,7 +147,7 @@ export async function startSession(sessionId) {
     const { connection, qr, lastDisconnect } = update;
 
     if (qr) {
-      qrcode.generate(qr, { small: true });
+      // qrcode.generate(qr, { small: true });
       console.log(`QR Code gerado para ${sessionId}`);
       qrcodes.set(sessionId, qr);
     }
@@ -387,19 +388,32 @@ export async function startSession(sessionId) {
 
       const sendRoutine = async () => {
         pendingMessages.delete(msg.key.id); // Remove da fila já que vai enviar agora
+        
+        const currentSock = sessions.get(sessionId);
+        const isConnected = sessionStatus.get(sessionId) === "CONNECTED";
+
+        if (!currentSock || !isConnected) {
+          console.log(`[${sessionId}] 🛑 Abortando envio: Conexão inativa ou perdida (ID: ${msg.key.id})`);
+          return;
+        }
+
         try {
           for (const target of config.targetGroups) {
             console.log(
               `[${sessionId}] ⌨️  Simulando digitação no grupo destino (${target.name})...`,
             );
 
-            await simulateTyping(sock, target.id, 2000 + Math.random() * 2000);
+            try {
+              await simulateTyping(currentSock, target.id, 2000 + Math.random() * 2000);
+            } catch (e) {
+              console.warn(`[${sessionId}] ⚠️ Falha ao simular digitação: ${e.message}`);
+            }
 
             // Clona a mensagem congelada para evitar que o Baileys a corrompa ao enviar para o próximo alvo do loop
             const targetMsgCopy = deepCloneMessage(frozenMsg);
 
             // Usa a funcionalidade nativa de forward do Baileys para repassar qualquer tipo de mensagem com perfeição
-            await sock.sendMessage(target.id, { forward: targetMsgCopy });
+            await currentSock.sendMessage(target.id, { forward: targetMsgCopy });
 
             // Log detalhado do envio
             console.log("\n" + "=".repeat(60));
@@ -418,8 +432,13 @@ export async function startSession(sessionId) {
           console.error("\n" + "=".repeat(60));
           console.error(`❌ [${sessionId}] ERRO AO ENVIAR MENSAGEM`);
           console.error("=".repeat(60));
-          console.error("Erro:", err);
+          console.error("Erro:", err.message || err);
           console.error("=".repeat(60) + "\n");
+          
+          // Se for erro de conexão, garante que o status reflita isso
+          if (err.message?.includes('Closed') || err.output?.statusCode === 428) {
+            sessionStatus.set(sessionId, "DISCONNECTED");
+          }
         }
       };
 
@@ -544,12 +563,18 @@ export function getSessionConfig(sessionId) {
 }
 
 async function simulateTyping(sock, jid, durationMs = 3000) {
-  await sock.presenceSubscribe(jid);
-  await sock.sendPresenceUpdate("composing", jid);
+  try {
+    if (!sock) return;
+    
+    await sock.presenceSubscribe(jid);
+    await sock.sendPresenceUpdate("composing", jid);
 
-  await new Promise((resolve) => setTimeout(resolve, durationMs));
+    await new Promise((resolve) => setTimeout(resolve, durationMs));
 
-  await sock.sendPresenceUpdate("paused", jid);
+    await sock.sendPresenceUpdate("paused", jid);
+  } catch (err) {
+    console.error(`[${sock?.user?.id || 'unknown'}] ⚠️ Erro ao simular digitação: ${err.message}`);
+  }
 }
 
 async function resolveGroupsByPrefix(sock, sessionId) {
