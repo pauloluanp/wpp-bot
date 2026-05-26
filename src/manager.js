@@ -2,11 +2,13 @@ import makeWASocket, {
   useMultiFileAuthState,
   DisconnectReason,
   fetchLatestBaileysVersion,
+  downloadMediaMessage,
 } from "@whiskeysockets/baileys";
 import qrcode from "qrcode-terminal";
 import path from "path";
 import fs from "fs";
 import P from "pino";
+import TelegramBot from "node-telegram-bot-api";
 import { db } from "./db/index.js";
 import { sessions as dbSessions } from "./db/schema.js";
 import { eq } from "drizzle-orm";
@@ -17,9 +19,11 @@ const sessionConfigs = new Map();
 const sessionStatus = new Map(); // Status das sessões: 'STARTING', 'CONNECTED', 'DISCONNECTED'
 const sessionSchedules = new Map(); // Controle de tempo de envio: Map<sessionId, {lastTime, windowStart, count}>
 const pendingMessages = new Map(); // Controle de respostas (enviar/encerrar) com a estrutura: Map<stanzaId, {timerId, forceSend, sessionId}>
+const telegramBots = new Map();
 
 const MSG_PER_WINDOW = 3;
 const WINDOW_MS = 15 * 60 * 1000;
+const DEFAULT_DELAY_MS = 2 * 60 * 1000;
 
 function deepCloneMessage(obj) {
   if (obj === null || typeof obj !== "object") return obj;
@@ -33,6 +37,254 @@ function deepCloneMessage(obj) {
     }
   }
   return cloned;
+}
+
+function getTelegramBot(sessionId) {
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+  if (!token) {
+    console.warn(
+      `[${sessionId}] ⚠️ TELEGRAM_BOT_TOKEN não configurado. Pulando envio para Telegram.`,
+    );
+    return null;
+  }
+
+  if (!telegramBots.has(token)) {
+    const bot = new TelegramBot(token, {
+      polling: {
+        params: {
+          allowed_updates: [
+            "message",
+            "channel_post",
+            "my_chat_member",
+            "chat_member",
+          ],
+        },
+      },
+    });
+
+    const chats = new Map();
+    const registerChat = (chat) => {
+      if (!chat?.id || !chat?.title) return;
+      if (!["group", "supergroup", "channel"].includes(chat.type)) return;
+
+      const alreadyRegistered = chats.has(String(chat.id));
+      chats.set(String(chat.id), {
+        id: chat.id,
+        title: chat.title,
+        type: chat.type,
+        username: chat.username,
+      });
+
+      if (!alreadyRegistered) {
+        console.log(
+          `✅ Telegram: grupo descoberto "${chat.title}" (ID: ${chat.id})`,
+        );
+      }
+
+      refreshTelegramTargetsForSessions();
+    };
+
+    bot.on("message", (message) => {
+      console.log(
+        `📨 Telegram update: mensagem em "${message.chat?.title || message.chat?.id}"`,
+      );
+      registerChat(message.chat);
+    });
+    bot.on("channel_post", (message) => {
+      console.log(
+        `📨 Telegram update: post em "${message.chat?.title || message.chat?.id}"`,
+      );
+      registerChat(message.chat);
+    });
+    bot.on("my_chat_member", (update) => registerChat(update.chat));
+    bot.on("chat_member", (update) => registerChat(update.chat));
+    bot.on("polling_error", (err) => {
+      console.error("❌ Erro no polling do Telegram:", err.message);
+    });
+
+    telegramBots.set(token, { bot, chats });
+    console.log("✅ Listener do Telegram iniciado.");
+    bot
+      .getMe()
+      .then((me) => {
+        console.log(`✅ Telegram bot conectado: @${me.username}`);
+      })
+      .catch((err) => {
+        console.error("❌ Erro ao validar bot do Telegram:", err.message);
+      });
+  }
+
+  return telegramBots.get(token);
+}
+
+export function initTelegramBot() {
+  getTelegramBot("telegram");
+}
+
+export async function getTelegramStatus() {
+  const telegram = getTelegramBot("telegram");
+  if (!telegram) {
+    return {
+      ok: false,
+      groups: [],
+      error: "TELEGRAM_BOT_TOKEN não configurado",
+    };
+  }
+
+  const me = await telegram.bot.getMe();
+
+  return {
+    ok: true,
+    bot: {
+      id: me.id,
+      username: me.username,
+      firstName: me.first_name,
+    },
+    groups: Array.from(telegram.chats.values()),
+  };
+}
+
+function resolveTelegramGroupsByPrefix(sessionId, prefix) {
+  if (!prefix) return [];
+
+  const telegram = getTelegramBot(sessionId);
+  if (!telegram) return [];
+
+  const normalizedPrefix = prefix.toLowerCase();
+  return Array.from(telegram.chats.values()).filter((chat) =>
+    chat.title?.toLowerCase().startsWith(normalizedPrefix),
+  );
+}
+
+function refreshTelegramTargetsForSessions() {
+  for (const [sessionId, config] of sessionConfigs.entries()) {
+    if (!config.targetGroupPrefix) continue;
+
+    const telegramTargets = resolveTelegramGroupsByPrefix(
+      sessionId,
+      config.targetGroupPrefix,
+    );
+
+    const previousCount = config.telegramTargetGroups?.length || 0;
+    sessionConfigs.set(sessionId, {
+      ...config,
+      telegramTargetGroups: telegramTargets,
+    });
+
+    if (telegramTargets.length !== previousCount) {
+      console.log(
+        `✅ [${sessionId}] Telegram atualizado: ${telegramTargets.length} grupo(s) com prefixo "${config.targetGroupPrefix}".`,
+      );
+    }
+  }
+}
+
+function getMessageCaption(message) {
+  return (
+    message.message?.conversation ||
+    message.message?.extendedTextMessage?.text ||
+    message.message?.imageMessage?.caption ||
+    message.message?.videoMessage?.caption ||
+    message.message?.documentMessage?.caption ||
+    ""
+  );
+}
+
+async function downloadWhatsAppMedia(sock, message) {
+  return downloadMediaMessage(
+    message,
+    "buffer",
+    {},
+    {
+      logger: P({ level: "silent" }),
+      reuploadRequest: sock.updateMediaMessage,
+    },
+  );
+}
+
+async function sendTelegramMessage(bot, chatId, media) {
+  const caption = media.caption || undefined;
+
+  if (media.type === "text") {
+    await bot.sendMessage(chatId, media.text);
+    return;
+  }
+
+  if (media.type === "image") {
+    await bot.sendPhoto(chatId, media.buffer, { caption });
+    return;
+  }
+
+  if (media.type === "video") {
+    await bot.sendVideo(chatId, media.buffer, { caption });
+    return;
+  }
+
+  if (media.type === "audio") {
+    await bot.sendAudio(chatId, media.buffer, { caption });
+    return;
+  }
+
+  if (media.type === "sticker") {
+    await bot.sendSticker(chatId, media.buffer);
+    return;
+  }
+
+  await bot.sendDocument(chatId, media.buffer, { caption }, {
+    filename: media.fileName,
+    contentType: media.mimeType,
+  });
+}
+
+async function createTelegramPayload(sock, message, fallbackText) {
+  const caption = getMessageCaption(message);
+  const content = message.message || {};
+
+  if (content.imageMessage) {
+    return {
+      type: "image",
+      buffer: await downloadWhatsAppMedia(sock, message),
+      caption,
+    };
+  }
+
+  if (content.videoMessage) {
+    return {
+      type: "video",
+      buffer: await downloadWhatsAppMedia(sock, message),
+      caption,
+    };
+  }
+
+  if (content.audioMessage) {
+    return {
+      type: "audio",
+      buffer: await downloadWhatsAppMedia(sock, message),
+      caption,
+    };
+  }
+
+  if (content.stickerMessage) {
+    return {
+      type: "sticker",
+      buffer: await downloadWhatsAppMedia(sock, message),
+    };
+  }
+
+  if (content.documentMessage) {
+    return {
+      type: "document",
+      buffer: await downloadWhatsAppMedia(sock, message),
+      caption,
+      fileName: content.documentMessage.fileName || "arquivo",
+      mimeType: content.documentMessage.mimetype,
+    };
+  }
+
+  return {
+    type: "text",
+    text: caption || fallbackText,
+  };
 }
 
 export async function resetAllSessionStatus() {
@@ -94,7 +346,8 @@ export async function startSession(sessionId) {
           sourceGroupName: null,
           sourceGroupPrefix: dbSession.sourceGroup,
           targetGroupPrefix: dbSession.targetGroup,
-          delayMs: 2 * 60 * 1000,
+          telegramTargetGroups: [],
+          delayMs: DEFAULT_DELAY_MS,
         };
         console.log(`✅ [${sessionId}] Configuração carregada do banco.`);
       }
@@ -123,7 +376,8 @@ export async function startSession(sessionId) {
       sourceGroupName: null,
       sourceGroupPrefix: null,
       targetGroupPrefix: null,
-      delayMs: 2 * 60 * 1000,
+      telegramTargetGroups: [],
+      delayMs: DEFAULT_DELAY_MS,
     });
   }
 
@@ -166,7 +420,8 @@ export async function startSession(sessionId) {
       if (config?.sourceGroupPrefix && config?.targetGroupPrefix) {
         console.log(`\n🔍 [${sessionId}] Buscando grupos com prefixos:`);
         console.log(`   📤 Origem: "${config.sourceGroupPrefix}"`);
-        console.log(`   📥 Destino: "${config.targetGroupPrefix}"\n`);
+        console.log(`   📥 Destino: "${config.targetGroupPrefix}"`);
+        console.log("");
         resolveGroupsByPrefix(sock, sessionId);
       } else {
         console.log(
@@ -246,8 +501,9 @@ export async function startSession(sessionId) {
       if (
         !config ||
         !config.sourceGroup ||
-        !config.targetGroups ||
-        config.targetGroups.length === 0
+        ((!config.targetGroups || config.targetGroups.length === 0) &&
+          (!config.telegramTargetGroups ||
+            config.telegramTargetGroups.length === 0))
       ) {
         console.log(
           `[${sessionId}] ⚠️  Configuração incompleta - grupos não configurados`,
@@ -414,6 +670,35 @@ export async function startSession(sessionId) {
             console.log(`💬 Mensagem: "${text}"`);
             console.log("=".repeat(60) + "\n");
           }
+
+          if (config.telegramTargetGroups?.length) {
+            const telegram = getTelegramBot(sessionId);
+            if (telegram) {
+              const telegramPayload = await createTelegramPayload(
+                sock,
+                deepCloneMessage(frozenMsg),
+                text,
+              );
+
+              for (const target of config.telegramTargetGroups) {
+                await sendTelegramMessage(
+                  telegram.bot,
+                  target.id,
+                  telegramPayload,
+                );
+
+                console.log("\n" + "=".repeat(60));
+                console.log(
+                  `✅ [${sessionId}] MENSAGEM ENVIADA PARA TELEGRAM (ID Original: ${msg.key.id})`,
+                );
+                console.log("=".repeat(60));
+                console.log(`📍 Grupo Telegram: ${target.title}`);
+                console.log(`🆔 ID do Grupo Telegram: ${target.id}`);
+                console.log(`💬 Mensagem: "${text}"`);
+                console.log("=".repeat(60) + "\n");
+              }
+            }
+          }
         } catch (err) {
           console.error("\n" + "=".repeat(60));
           console.error(`❌ [${sessionId}] ERRO AO ENVIAR MENSAGEM`);
@@ -513,7 +798,8 @@ export function updateSessionConfig(sessionId, config) {
       sourceGroupName: null,
       sourceGroupPrefix: null,
       targetGroupPrefix: null,
-      delayMs: 2 * 60 * 1000,
+      telegramTargetGroups: [],
+      delayMs: DEFAULT_DELAY_MS,
       ...config, // Aplica as configurações fornecidas
     });
   } else {
@@ -564,20 +850,26 @@ async function resolveGroupsByPrefix(sock, sessionId) {
     g.subject?.toLowerCase().startsWith(config.sourceGroupPrefix.toLowerCase()),
   );
 
-  const targets = groups.filter((g) =>
-    g.subject?.toLowerCase().startsWith(config.targetGroupPrefix.toLowerCase()),
+  const targets = config.targetGroupPrefix
+    ? groups.filter((g) =>
+        g.subject
+          ?.toLowerCase()
+          .startsWith(config.targetGroupPrefix.toLowerCase()),
+      )
+    : [];
+  const telegramTargets = resolveTelegramGroupsByPrefix(
+    sessionId,
+    config.targetGroupPrefix,
   );
+  const hasTelegramTargets = telegramTargets.length > 0;
 
-  if (!source || targets.length === 0) {
+  if (!source) {
     console.log("\n" + "=".repeat(60));
     console.log(`❌ [${sessionId}] GRUPOS NÃO ENCONTRADOS`);
     console.log("=".repeat(60));
     console.log(`Procurando por:`);
     console.log(
       `   📤 Origem: prefixo "${config.sourceGroupPrefix}" ${!source ? "❌ NÃO ENCONTRADO" : "✅"}`,
-    );
-    console.log(
-      `   📥 Destino: prefixo "${config.targetGroupPrefix}" ${targets.length === 0 ? "❌ NÃO ENCONTRADO" : `✅ Encontrados: ${targets.length}`}`,
     );
     console.log(`\nGrupos disponíveis (${groups.length}):`);
     groups.forEach((g, idx) => {
@@ -592,17 +884,45 @@ async function resolveGroupsByPrefix(sock, sessionId) {
     sourceGroup: source.id,
     sourceGroupName: source.subject,
     targetGroups: targets.map((t) => ({ id: t.id, name: t.subject })),
+    telegramTargetGroups: telegramTargets,
   });
+
+  if (targets.length === 0 && !hasTelegramTargets) {
+    console.log("\n" + "=".repeat(60));
+    console.log(`⚠️ [${sessionId}] DESTINOS NÃO ENCONTRADOS`);
+    console.log("=".repeat(60));
+    console.log(`📤 Grupo de Origem: ${source.subject}`);
+    console.log(`   ID: ${source.id}`);
+    console.log(
+      `📥 WhatsApp destino: prefixo "${config.targetGroupPrefix}" ❌ NÃO ENCONTRADO`,
+    );
+    console.log(
+      `📥 Telegram destino: prefixo "${config.targetGroupPrefix}" ❌ NÃO ENCONTRADO`,
+    );
+    console.log(
+      "ℹ️  Para Telegram, envie uma mensagem no grupo de destino ou adicione/re-adicione o bot para ele descobrir o título do grupo.",
+    );
+    console.log("=".repeat(60) + "\n");
+    return;
+  }
 
   console.log("\n" + "=".repeat(60));
   console.log(`✅ [${sessionId}] GRUPOS CONFIGURADOS COM SUCESSO`);
   console.log("=".repeat(60));
   console.log(`📤 Grupo de Origem: ${source.subject}`);
   console.log(`   ID: ${source.id}`);
-  console.log(`📥 Grupos de Destino (${targets.length}):`);
-  targets.forEach((t, idx) => {
-    console.log(`   ${idx + 1}. ${t.subject} (ID: ${t.id})`);
-  });
+  if (targets.length) {
+    console.log(`📥 Grupos de Destino WhatsApp (${targets.length}):`);
+    targets.forEach((t, idx) => {
+      console.log(`   ${idx + 1}. ${t.subject} (ID: ${t.id})`);
+    });
+  }
+  if (hasTelegramTargets) {
+    console.log(`📥 Grupos de Destino Telegram (${telegramTargets.length}):`);
+    telegramTargets.forEach((chat, idx) => {
+      console.log(`   ${idx + 1}. ${chat.title} (ID: ${chat.id})`);
+    });
+  }
   console.log("=".repeat(60) + "\n");
 }
 

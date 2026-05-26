@@ -1,5 +1,6 @@
 import express from 'express';
 import { makeSessionController } from './modules/session/session.module.js';
+import { getTelegramStatus } from './manager.js';
 
 const router = express.Router();
 const sessionController = makeSessionController();
@@ -17,5 +18,14 @@ router.get('/sessions/:id/qrcode', sessionController.getQRCode);
 router.post('/sessions/:id/config', sessionController.updateSessionConfig);
 
 router.get('/sessions/:id/pending', sessionController.getPendingMessages);
+
+router.get('/telegram/groups', async (req, res) => {
+  try {
+    const status = await getTelegramStatus();
+    return res.json(status);
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
+  }
+});
 
 export default router;

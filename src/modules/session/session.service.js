@@ -19,7 +19,11 @@ export default class SessionService {
 
         await startSession(sessionId);
 
-        const session = await this.sessionRepository.createSession(sessionId, sourceGroupPrefix, targetGroupPrefix);
+        const session = await this.sessionRepository.createSession(
+            sessionId,
+            sourceGroupPrefix,
+            targetGroupPrefix
+        );
         return session;
     }
 
@@ -77,10 +81,16 @@ export default class SessionService {
         updateSessionConfig(sessionId, {
             sourceGroup,
             targetGroup,
+            sourceGroupPrefix: sourceGroup,
+            targetGroupPrefix: targetGroup,
             delayMs
         });
 
-        return this.sessionRepository.updateSessionConfig(sessionId, sourceGroup, targetGroup);
+        return this.sessionRepository.updateSessionConfig(
+            sessionId,
+            sourceGroup,
+            targetGroup
+        );
     }
 
     getPendingMessages(sessionId) {
