@@ -99,7 +99,22 @@ function getTelegramBot(sessionId) {
     bot.on("my_chat_member", (update) => registerChat(update.chat));
     bot.on("chat_member", (update) => registerChat(update.chat));
     bot.on("polling_error", (err) => {
-      console.error("❌ Erro no polling do Telegram:", err.message);
+      const message = err.message || String(err);
+      const isNetworkError =
+        message.includes("ENETUNREACH") ||
+        message.includes("EAI_AGAIN") ||
+        message.includes("ETIMEDOUT") ||
+        message.includes("ECONNRESET") ||
+        message.includes("AggregateError");
+
+      if (isNetworkError) {
+        console.warn(
+          "⚠️ Telegram polling: falha temporária de rede. O bot tentará novamente automaticamente.",
+        );
+        return;
+      }
+
+      console.error("❌ Erro no polling do Telegram:", message);
     });
 
     telegramBots.set(token, { bot, chats });
@@ -204,6 +219,10 @@ async function downloadWhatsAppMedia(sock, message) {
 
 async function sendTelegramMessage(bot, chatId, media) {
   const caption = media.caption || undefined;
+  const fileOptions = {
+    filename: media.fileName || "whatsapp-media",
+    contentType: media.mimeType,
+  };
 
   if (media.type === "text") {
     await bot.sendMessage(chatId, media.text);
@@ -211,29 +230,26 @@ async function sendTelegramMessage(bot, chatId, media) {
   }
 
   if (media.type === "image") {
-    await bot.sendPhoto(chatId, media.buffer, { caption });
+    await bot.sendPhoto(chatId, media.buffer, { caption }, fileOptions);
     return;
   }
 
   if (media.type === "video") {
-    await bot.sendVideo(chatId, media.buffer, { caption });
+    await bot.sendVideo(chatId, media.buffer, { caption }, fileOptions);
     return;
   }
 
   if (media.type === "audio") {
-    await bot.sendAudio(chatId, media.buffer, { caption });
+    await bot.sendAudio(chatId, media.buffer, { caption }, fileOptions);
     return;
   }
 
   if (media.type === "sticker") {
-    await bot.sendSticker(chatId, media.buffer);
+    await bot.sendSticker(chatId, media.buffer, {}, fileOptions);
     return;
   }
 
-  await bot.sendDocument(chatId, media.buffer, { caption }, {
-    filename: media.fileName,
-    contentType: media.mimeType,
-  });
+  await bot.sendDocument(chatId, media.buffer, { caption }, fileOptions);
 }
 
 async function createTelegramPayload(sock, message, fallbackText) {
@@ -245,6 +261,8 @@ async function createTelegramPayload(sock, message, fallbackText) {
       type: "image",
       buffer: await downloadWhatsAppMedia(sock, message),
       caption,
+      fileName: "imagem.jpg",
+      mimeType: content.imageMessage.mimetype,
     };
   }
 
@@ -253,6 +271,8 @@ async function createTelegramPayload(sock, message, fallbackText) {
       type: "video",
       buffer: await downloadWhatsAppMedia(sock, message),
       caption,
+      fileName: "video.mp4",
+      mimeType: content.videoMessage.mimetype,
     };
   }
 
@@ -261,6 +281,8 @@ async function createTelegramPayload(sock, message, fallbackText) {
       type: "audio",
       buffer: await downloadWhatsAppMedia(sock, message),
       caption,
+      fileName: "audio.ogg",
+      mimeType: content.audioMessage.mimetype,
     };
   }
 
@@ -268,6 +290,8 @@ async function createTelegramPayload(sock, message, fallbackText) {
     return {
       type: "sticker",
       buffer: await downloadWhatsAppMedia(sock, message),
+      fileName: "sticker.webp",
+      mimeType: content.stickerMessage.mimetype,
     };
   }
 
