@@ -20,10 +20,24 @@ const sessionStatus = new Map(); // Status das sessões: 'STARTING', 'CONNECTED'
 const sessionSchedules = new Map(); // Controle de tempo de envio: Map<sessionId, {lastTime, windowStart, count}>
 const pendingMessages = new Map(); // Controle de respostas (enviar/encerrar) com a estrutura: Map<stanzaId, {timerId, forceSend, sessionId}>
 const telegramBots = new Map();
+const processedMessages = new Set();
 
 const MSG_PER_WINDOW = 3;
 const WINDOW_MS = 15 * 60 * 1000;
 const DEFAULT_DELAY_MS = 2 * 60 * 1000;
+
+function getMessageKey(sessionId, messageId) {
+  return `${sessionId}:${messageId}`;
+}
+
+function markMessageAsProcessed(sessionId, messageId) {
+  const key = getMessageKey(sessionId, messageId);
+  if (processedMessages.has(key)) return false;
+
+  processedMessages.add(key);
+  setTimeout(() => processedMessages.delete(key), 2 * 60 * 60 * 1000);
+  return true;
+}
 
 function deepCloneMessage(obj) {
   if (obj === null || typeof obj !== "object") return obj;
@@ -98,14 +112,31 @@ function getTelegramBot(sessionId) {
     });
     bot.on("my_chat_member", (update) => registerChat(update.chat));
     bot.on("chat_member", (update) => registerChat(update.chat));
+    let pollingConflictLogged = false;
+
     bot.on("polling_error", (err) => {
       const message = err.message || String(err);
+      const isConflict =
+        message.includes("409 Conflict") ||
+        message.includes("terminated by other getUpdates request");
       const isNetworkError =
         message.includes("ENETUNREACH") ||
         message.includes("EAI_AGAIN") ||
         message.includes("ETIMEDOUT") ||
         message.includes("ECONNRESET") ||
         message.includes("AggregateError");
+
+      if (isConflict) {
+        if (!pollingConflictLogged) {
+          pollingConflictLogged = true;
+          console.warn(
+            "⚠️ Telegram polling pausado: existe outra instância usando o mesmo TELEGRAM_BOT_TOKEN. Encerre a outra instância e reinicie este servidor para voltar a descobrir grupos automaticamente.",
+          );
+        }
+
+        bot.stopPolling().catch(() => {});
+        return;
+      }
 
       if (isNetworkError) {
         console.warn(
@@ -391,6 +422,7 @@ export async function startSession(sessionId) {
       sourceGroup: null,
       targetGroups: [],
       sourceGroupName: null,
+      telegramTargetGroups: [],
     });
   } else {
     // Primeira vez absoluta, cria configuração padrão
@@ -539,6 +571,13 @@ export async function startSession(sessionId) {
       if (!isGroup) continue;
       if (from !== config.sourceGroup) continue;
 
+      if (!markMessageAsProcessed(sessionId, msg.key.id)) {
+        console.log(
+          `[${sessionId}] ⚠️ Mensagem duplicada ignorada (ID: ${msg.key.id})`,
+        );
+        continue;
+      }
+
       // Tenta extrair texto para log, se não houver será considerado mídia
       const text =
         msg.message.conversation ||
@@ -558,20 +597,21 @@ export async function startSession(sessionId) {
         const command = text.trim().toLowerCase();
 
         if (command === "enviar" || command === "encerrar") {
-          const pending = pendingMessages.get(repliedId);
+          const pendingKey = getMessageKey(sessionId, repliedId);
+          const pending = pendingMessages.get(pendingKey);
           if (pending && pending.sessionId === sessionId) {
             clearTimeout(pending.timerId);
             if (command === "enviar") {
               console.log(
                 `\n[${sessionId}] 🚀 FORÇANDO ENVIO IMEDIATO da mensagem ${repliedId}`,
               );
-              pendingMessages.delete(repliedId);
+              pendingMessages.delete(pendingKey);
               await pending.forceSend(); // executa o envio agora
             } else if (command === "encerrar") {
               console.log(
                 `\n[${sessionId}] 🛑 CANCELANDO ENVIO da mensagem ${repliedId}`,
               );
-              pendingMessages.delete(repliedId);
+              pendingMessages.delete(pendingKey);
             }
           } else {
             console.log(
@@ -667,18 +707,20 @@ export async function startSession(sessionId) {
       );
 
       const sendRoutine = async () => {
-        pendingMessages.delete(msg.key.id); // Remove da fila já que vai enviar agora
+        const pendingKey = getMessageKey(sessionId, msg.key.id);
+        pendingMessages.delete(pendingKey); // Remove da fila já que vai enviar agora
         
         const currentSock = sessions.get(sessionId);
         const isConnected = sessionStatus.get(sessionId) === "CONNECTED";
+        const currentConfig = getSessionConfig(sessionId);
 
-        if (!currentSock || !isConnected) {
+        if (!currentSock || !isConnected || !currentConfig) {
           console.log(`[${sessionId}] 🛑 Abortando envio: Conexão inativa ou perdida (ID: ${msg.key.id})`);
           return;
         }
 
         try {
-          for (const target of config.targetGroups) {
+          for (const target of currentConfig.targetGroups || []) {
             console.log(
               `[${sessionId}] ⌨️  Simulando digitação no grupo destino (${target.name})...`,
             );
@@ -709,16 +751,21 @@ export async function startSession(sessionId) {
             console.log("=".repeat(60) + "\n");
           }
 
-          if (config.telegramTargetGroups?.length) {
+          const telegramTargets = resolveTelegramGroupsByPrefix(
+            sessionId,
+            currentConfig.targetGroupPrefix,
+          );
+
+          if (telegramTargets.length) {
             const telegram = getTelegramBot(sessionId);
             if (telegram) {
               const telegramPayload = await createTelegramPayload(
-                sock,
+                currentSock,
                 deepCloneMessage(frozenMsg),
                 text,
               );
 
-              for (const target of config.telegramTargetGroups) {
+              for (const target of telegramTargets) {
                 await sendTelegramMessage(
                   telegram.bot,
                   target.id,
@@ -752,11 +799,13 @@ export async function startSession(sessionId) {
       };
 
       const timerId = setTimeout(sendRoutine, delayMs);
+      const pendingKey = getMessageKey(sessionId, msg.key.id);
 
-      pendingMessages.set(msg.key.id, {
+      pendingMessages.set(pendingKey, {
         timerId,
         forceSend: sendRoutine,
         sessionId,
+        msgId: msg.key.id,
         scheduledTime: nextTime,
         messagePreview:
           text.substring(0, 100) + (text.length > 100 ? "..." : ""),
@@ -850,6 +899,14 @@ export function updateSessionConfig(sessionId, config) {
     sessionConfigs.set(sessionId, {
       ...current,
       ...config,
+      ...(config.sourceGroupPrefix || config.targetGroupPrefix
+        ? {
+            sourceGroup: null,
+            targetGroups: [],
+            sourceGroupName: null,
+            telegramTargetGroups: [],
+          }
+        : {}),
     });
   }
 
@@ -1002,7 +1059,7 @@ export function getPendingMessages(sessionId) {
   for (const [msgId, data] of pendingMessages.entries()) {
     if (data.sessionId === sessionId) {
       pending.push({
-        msgId,
+        msgId: data.msgId || msgId,
         scheduledTime: data.scheduledTime,
         messagePreview: data.messagePreview,
       });
