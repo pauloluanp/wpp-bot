@@ -63,17 +63,20 @@ function getTelegramBot(sessionId) {
   }
 
   if (!telegramBots.has(token)) {
+    const pollingEnabled = process.env.TELEGRAM_POLLING !== "false";
     const bot = new TelegramBot(token, {
-      polling: {
-        params: {
-          allowed_updates: [
-            "message",
-            "channel_post",
-            "my_chat_member",
-            "chat_member",
-          ],
-        },
-      },
+      polling: pollingEnabled
+        ? {
+            params: {
+              allowed_updates: [
+                "message",
+                "channel_post",
+                "my_chat_member",
+                "chat_member",
+              ],
+            },
+          }
+        : false,
     });
 
     const chats = new Map();
@@ -98,58 +101,66 @@ function getTelegramBot(sessionId) {
       refreshTelegramTargetsForSessions();
     };
 
-    bot.on("message", (message) => {
-      console.log(
-        `📨 Telegram update: mensagem em "${message.chat?.title || message.chat?.id}"`,
-      );
-      registerChat(message.chat);
-    });
-    bot.on("channel_post", (message) => {
-      console.log(
-        `📨 Telegram update: post em "${message.chat?.title || message.chat?.id}"`,
-      );
-      registerChat(message.chat);
-    });
-    bot.on("my_chat_member", (update) => registerChat(update.chat));
-    bot.on("chat_member", (update) => registerChat(update.chat));
-    let pollingConflictLogged = false;
+    if (pollingEnabled) {
+      bot.on("message", (message) => {
+        console.log(
+          `📨 Telegram update: mensagem em "${message.chat?.title || message.chat?.id}"`,
+        );
+        registerChat(message.chat);
+      });
+      bot.on("channel_post", (message) => {
+        console.log(
+          `📨 Telegram update: post em "${message.chat?.title || message.chat?.id}"`,
+        );
+        registerChat(message.chat);
+      });
+      bot.on("my_chat_member", (update) => registerChat(update.chat));
+      bot.on("chat_member", (update) => registerChat(update.chat));
+      let pollingConflictLogged = false;
 
-    bot.on("polling_error", (err) => {
-      const message = err.message || String(err);
-      const isConflict =
-        message.includes("409 Conflict") ||
-        message.includes("terminated by other getUpdates request");
-      const isNetworkError =
-        message.includes("ENETUNREACH") ||
-        message.includes("EAI_AGAIN") ||
-        message.includes("ETIMEDOUT") ||
-        message.includes("ECONNRESET") ||
-        message.includes("AggregateError");
+      bot.on("polling_error", (err) => {
+        const message = err.message || String(err);
+        const isConflict =
+          message.includes("409 Conflict") ||
+          message.includes("terminated by other getUpdates request");
+        const isNetworkError =
+          message.includes("ENETUNREACH") ||
+          message.includes("EAI_AGAIN") ||
+          message.includes("ETIMEDOUT") ||
+          message.includes("ECONNRESET") ||
+          message.includes("AggregateError");
 
-      if (isConflict) {
-        if (!pollingConflictLogged) {
-          pollingConflictLogged = true;
-          console.warn(
-            "⚠️ Telegram polling pausado: existe outra instância usando o mesmo TELEGRAM_BOT_TOKEN. Encerre a outra instância e reinicie este servidor para voltar a descobrir grupos automaticamente.",
-          );
+        if (isConflict) {
+          if (!pollingConflictLogged) {
+            pollingConflictLogged = true;
+            console.warn(
+              "⚠️ Telegram polling pausado: existe outra instância usando o mesmo TELEGRAM_BOT_TOKEN. Encerre a outra instância e reinicie este servidor para voltar a descobrir grupos automaticamente.",
+            );
+          }
+
+          bot.stopPolling().catch(() => {});
+          return;
         }
 
-        bot.stopPolling().catch(() => {});
-        return;
-      }
+        if (isNetworkError) {
+          console.warn(
+            "⚠️ Telegram polling: falha temporária de rede. O bot tentará novamente automaticamente.",
+          );
+          return;
+        }
 
-      if (isNetworkError) {
-        console.warn(
-          "⚠️ Telegram polling: falha temporária de rede. O bot tentará novamente automaticamente.",
-        );
-        return;
-      }
-
-      console.error("❌ Erro no polling do Telegram:", message);
-    });
+        console.error("❌ Erro no polling do Telegram:", message);
+      });
+    } else {
+      console.log(
+        "ℹ️ Listener do Telegram iniciado sem polling (TELEGRAM_POLLING=false).",
+      );
+    }
 
     telegramBots.set(token, { bot, chats });
-    console.log("✅ Listener do Telegram iniciado.");
+    if (pollingEnabled) {
+      console.log("✅ Listener do Telegram iniciado.");
+    }
     bot
       .getMe()
       .then((me) => {
