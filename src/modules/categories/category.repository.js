@@ -8,4 +8,8 @@ export default class CategoryRepository {
   async createCategory(name) {
     return this.db.insert(categories).values({ name });
   }
+
+  async listCategories() {
+    return this.db.select().from(categories);
+  }
 }

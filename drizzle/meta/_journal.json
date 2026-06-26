@@ -8,6 +8,13 @@
       "when": 1782438924839,
       "tag": "0000_daily_vampiro",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1782443739153,
+      "tag": "0001_cuddly_joseph",
+      "breakpoints": true
     }
   ]
 }

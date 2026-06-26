@@ -18,4 +18,13 @@ export default class CategoryController {
       return res.status(500).json({ error: error.message });
     }
   };
+
+  listCategories = async (req, res) => {
+    try {
+      const categories = await this.categoryService.listCategories();
+      return res.json(categories);
+    } catch (error) {
+      return res.status(500).json({ error: error.message });
+    }
+  };
 }

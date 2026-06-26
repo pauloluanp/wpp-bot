@@ -7,4 +7,9 @@ export default class CategoryService {
     const category = await this.categoryRepository.createCategory(name);
     return { category, message: "Categoria criada com sucesso" };
   }
+
+  async listCategories() {
+    const categories = await this.categoryRepository.listCategories();
+    return categories;
+  }
 }
