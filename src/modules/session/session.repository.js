@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { sessions } from "../../db/schema.js";
 
 export default class SessionRepository {
@@ -6,8 +6,9 @@ export default class SessionRepository {
     this.db = db;
   }
 
-  async createSession(sessionId, sourceGroupPrefix, targetGroupPrefix) {
+  async createSession(userId, sessionId, sourceGroupPrefix, targetGroupPrefix) {
     return this.db.insert(sessions).values({
+      userId,
       sessionId,
       sourceGroup: sourceGroupPrefix,
       targetGroup: targetGroupPrefix,
@@ -15,43 +16,43 @@ export default class SessionRepository {
     });
   }
 
-  async startSession(sessionId) {
+  async startSession(sessionId, userId) {
     return this.db
       .update(sessions)
       .set({ status: true })
-      .where(eq(sessions.sessionId, sessionId));
+      .where(and(eq(sessions.sessionId, sessionId), eq(sessions.userId, userId)));
   }
 
-  async stopSession(sessionId) {
+  async stopSession(sessionId, userId) {
     return this.db
       .update(sessions)
       .set({ status: false })
-      .where(eq(sessions.sessionId, sessionId));
+      .where(and(eq(sessions.sessionId, sessionId), eq(sessions.userId, userId)));
   }
 
   
 
-  async listSessions() {
-    return this.db.select().from(sessions);
+  async listSessions(userId) {
+    return this.db.select().from(sessions).where(eq(sessions.userId, userId));
   }
 
-  async deleteSession(sessionId) {
+  async deleteSession(sessionId, userId) {
     return this.db
       .delete(sessions)
-      .where(eq(sessions.sessionId, sessionId));
+      .where(and(eq(sessions.sessionId, sessionId), eq(sessions.userId, userId)));
   }
 
-  async updateSessionConfig(sessionId, sourceGroup, targetGroup) {
+  async updateSessionConfig(sessionId, userId, sourceGroup, targetGroup) {
     return this.db
       .update(sessions)
       .set({ sourceGroup, targetGroup })
-      .where(eq(sessions.sessionId, sessionId));
+      .where(and(eq(sessions.sessionId, sessionId), eq(sessions.userId, userId)));
   }
 
-  async getSessionById(sessionId) {
+  async getSessionById(sessionId, userId) {
     return this.db
       .select()
       .from(sessions)
-      .where(eq(sessions.sessionId, sessionId));
+      .where(and(eq(sessions.sessionId, sessionId), eq(sessions.userId, userId)));
   }
 }

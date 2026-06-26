@@ -18,6 +18,7 @@ export const users = pgTable("users", {
 
 export const sessions = pgTable("sessions", {
   id: serial("id").primaryKey(),
+  userId: integer("user_id").references(() => users.id),
   sessionId: varchar("session_id", { length: 255 }),
   sourceGroup: varchar("source_group", { length: 255 }),
   targetGroup: varchar("target_group", { length: 255 }),

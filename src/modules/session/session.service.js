@@ -5,7 +5,7 @@ export default class SessionService {
         this.sessionRepository = sessionRepository;
     }
 
-    async createSession(sessionId, sourceGroupPrefix, targetGroupPrefix) {
+    async createSession(userId, sessionId, sourceGroupPrefix, targetGroupPrefix) {
         // Configura os prefixos ANTES de iniciar a sessão
         if (sourceGroupPrefix && targetGroupPrefix) {
             updateSessionConfig(sessionId, {
@@ -20,6 +20,7 @@ export default class SessionService {
         await startSession(sessionId);
 
         const session = await this.sessionRepository.createSession(
+            userId,
             sessionId,
             sourceGroupPrefix,
             targetGroupPrefix
@@ -27,8 +28,8 @@ export default class SessionService {
         return session;
     }
 
-    async startSession(sessionId) {
-        const existsSession = await this.sessionRepository.getSessionById(sessionId);
+    async startSession(sessionId, userId) {
+        const existsSession = await this.sessionRepository.getSessionById(sessionId, userId);
         if (!existsSession || existsSession.length === 0) {
             throw new Error('Sessão não encontrada');
         }
@@ -40,8 +41,8 @@ export default class SessionService {
         return { ok: true };
     }
 
-    async stopSession(sessionId) {
-        const existsSession = await this.sessionRepository.getSessionById(sessionId);
+    async stopSession(sessionId, userId) {
+        const existsSession = await this.sessionRepository.getSessionById(sessionId, userId);
         if (!existsSession || existsSession.length === 0) {
             throw new Error('Sessão não encontrada');
         }
@@ -52,16 +53,16 @@ export default class SessionService {
 
         stopSession(sessionId);
 
-        await this.sessionRepository.stopSession(sessionId);
+        await this.sessionRepository.stopSession(sessionId, userId);
         return { ok: true };
     }
 
-    async listSessions() {
-        return this.sessionRepository.listSessions();
+    async listSessions(userId) {
+        return this.sessionRepository.listSessions(userId);
     }
 
-    async deleteSession(sessionId) {
-        const existsSession = await this.sessionRepository.getSessionById(sessionId);
+    async deleteSession(sessionId, userId) {
+        const existsSession = await this.sessionRepository.getSessionById(sessionId, userId);
         if (!existsSession || existsSession.length === 0) {
             throw new Error('Sessão não encontrada');
         }
@@ -69,15 +70,25 @@ export default class SessionService {
             await stopSession(sessionId);
         }
         await deleteSession(sessionId);
-        await this.sessionRepository.deleteSession(sessionId);
+        await this.sessionRepository.deleteSession(sessionId, userId);
         return { ok: true };
     }
 
-    async getQRCode(sessionId) {
+    async getQRCode(sessionId, userId) {
+        const existsSession = await this.sessionRepository.getSessionById(sessionId, userId);
+        if (!existsSession || existsSession.length === 0) {
+            throw new Error('Sessão não encontrada');
+        }
+
         return getQRCode(sessionId);
     }
 
-    async updateSessionConfig(sessionId, sourceGroup, targetGroup, delayMs) {
+    async updateSessionConfig(sessionId, userId, sourceGroup, targetGroup, delayMs) {
+        const existsSession = await this.sessionRepository.getSessionById(sessionId, userId);
+        if (!existsSession || existsSession.length === 0) {
+            throw new Error('Sessão não encontrada');
+        }
+
         updateSessionConfig(sessionId, {
             sourceGroup,
             targetGroup,
@@ -88,12 +99,18 @@ export default class SessionService {
 
         return this.sessionRepository.updateSessionConfig(
             sessionId,
+            userId,
             sourceGroup,
             targetGroup
         );
     }
 
-    getPendingMessages(sessionId) {
+    async getPendingMessages(sessionId, userId) {
+        const existsSession = await this.sessionRepository.getSessionById(sessionId, userId);
+        if (!existsSession || existsSession.length === 0) {
+            throw new Error('Sessão não encontrada');
+        }
+
         return getPendingMessages(sessionId);
     }
 }

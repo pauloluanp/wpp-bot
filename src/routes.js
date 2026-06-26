@@ -18,16 +18,16 @@ router.get("/categories", authMiddleware, categoryController.listCategories);
 router.post("/sessions", authMiddleware, sessionController.createSession);
 router.get("/sessions", authMiddleware, sessionController.listSessions);
 
-router.patch("/sessions/:id/start", sessionController.startSession);
-router.patch("/sessions/:id/stop", sessionController.stopSession);
+router.patch("/sessions/:id/start", authMiddleware, sessionController.startSession);
+router.patch("/sessions/:id/stop", authMiddleware, sessionController.stopSession);
 
-router.delete("/sessions/:id", sessionController.deleteSession);
+router.delete("/sessions/:id", authMiddleware, sessionController.deleteSession);
 
-router.get("/sessions/:id/qrcode", sessionController.getQRCode);
+router.get("/sessions/:id/qrcode", authMiddleware, sessionController.getQRCode);
 
-router.post("/sessions/:id/config", sessionController.updateSessionConfig);
+router.post("/sessions/:id/config", authMiddleware, sessionController.updateSessionConfig);
 
-router.get("/sessions/:id/pending", sessionController.getPendingMessages);
+router.get("/sessions/:id/pending", authMiddleware, sessionController.getPendingMessages);
 
 router.get("/telegram/groups", async (req, res) => {
   try {

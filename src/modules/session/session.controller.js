@@ -5,6 +5,7 @@ export default class SessionController {
 
   createSession = async (req, res) => {
     const { sessionId, sourceGroupPrefix, targetGroupPrefix } = req.body;
+    const userId = req.user.id;
     
     if (!sessionId) {
       return res.status(400).json({ error: 'sessionId obrigatório' });
@@ -12,6 +13,7 @@ export default class SessionController {
 
     try {
       const session = await this.sessionService.createSession(
+        userId,
         sessionId,
         sourceGroupPrefix,
         targetGroupPrefix
@@ -24,8 +26,9 @@ export default class SessionController {
 
   startSession = async (req, res) => {
     const { id: sessionId } = req.params;
+    const userId = req.user.id;
     try {
-      const session = await this.sessionService.startSession(sessionId);
+      const session = await this.sessionService.startSession(sessionId, userId);
       return res.json(session);
     } catch (error) {
       return res.status(500).json({ error: error.message });
@@ -34,8 +37,9 @@ export default class SessionController {
 
   stopSession = async (req, res) => {
     const { id: sessionId } = req.params;
+    const userId = req.user.id;
     try {
-      const session = await this.sessionService.stopSession(sessionId);
+      const session = await this.sessionService.stopSession(sessionId, userId);
       return res.json(session);
     } catch (error) {
        return res.status(500).json({ error: error.message });
@@ -43,8 +47,10 @@ export default class SessionController {
   };
 
   listSessions = async (req, res) => {
+    const userId = req.user.id;
+
     try {
-      const sessions = await this.sessionService.listSessions();
+      const sessions = await this.sessionService.listSessions(userId);
       
       const total = sessions.length;
       const active = sessions.filter(s => s.status).length;
@@ -63,8 +69,9 @@ export default class SessionController {
 
   deleteSession = async (req, res) => {
     const { id: sessionId } = req.params;
+    const userId = req.user.id;
     try {
-      const session = await this.sessionService.deleteSession(sessionId);
+      const session = await this.sessionService.deleteSession(sessionId, userId);
       return res.json(session);
     } catch (error) {
       return res.status(500).json({ error: error.message });
@@ -73,8 +80,9 @@ export default class SessionController {
 
   getQRCode = async (req, res) => {
     const { id: sessionId } = req.params;
+    const userId = req.user.id;
     try {
-      const result = await this.sessionService.getQRCode(sessionId);
+      const result = await this.sessionService.getQRCode(sessionId, userId);
       
       if (!result) {
         return res.status(404).json({
@@ -96,11 +104,13 @@ export default class SessionController {
 
   updateSessionConfig = async (req, res) => {
     const { id: sessionId } = req.params;
+    const userId = req.user.id;
     const { sourceGroup, targetGroup, delayMs } = req.body;
 
     try {
       const session = await this.sessionService.updateSessionConfig(
         sessionId,
+        userId,
         sourceGroup,
         targetGroup,
         delayMs
@@ -112,10 +122,11 @@ export default class SessionController {
     }
   };
 
-  getPendingMessages = (req, res) => {
+  getPendingMessages = async (req, res) => {
     const { id: sessionId } = req.params;
+    const userId = req.user.id;
     try {
-      const pending = this.sessionService.getPendingMessages(sessionId);
+      const pending = await this.sessionService.getPendingMessages(sessionId, userId);
       return res.json({ pending });
     } catch (error) {
       return res.status(500).json({ error: error.message });
