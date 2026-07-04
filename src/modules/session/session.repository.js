@@ -6,12 +6,13 @@ export default class SessionRepository {
     this.db = db;
   }
 
-  async createSession(userId, sessionId, sourceGroupPrefix, targetGroupPrefix) {
+  async createSession(userId, sessionId, sourceGroupPrefix, targetGroupPrefix, folderId = null) {
     return this.db.insert(sessions).values({
       userId,
       sessionId,
       sourceGroup: sourceGroupPrefix,
       targetGroup: targetGroupPrefix,
+      folderId,
       status: false
     });
   }

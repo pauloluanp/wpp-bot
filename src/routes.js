@@ -1,20 +1,28 @@
 import express from "express";
 import { makeSessionController } from "./modules/session/session.module.js";
 import { getTelegramStatus } from "./manager.js";
-import { moduleCategory } from "./modules/categories/category.module.js";
 import { makeUserController } from "./modules/users/user.module.js";
+import { makeFolderController } from "./modules/folders/folder.module.js";
+import { makePlanModule } from "./modules/plans/plan.module.js";
 import { authMiddleware } from "./middlewares/auth.middleware.js";
 
 const router = express.Router();
 const sessionController = makeSessionController();
-const categoryController = moduleCategory();
 const userController = makeUserController();
+const folderController = makeFolderController();
+const { planController } = makePlanModule();
 
 router.post("/users", userController.createUser);
 router.post("/login", userController.login);
 
-router.post("/categories", authMiddleware, categoryController.createCategory);
-router.get("/categories", authMiddleware, categoryController.listCategories);
+// Planos
+router.get("/plans", planController.listPlans);
+router.patch("/me/plan", authMiddleware, userController.updatePlan);
+
+// Pastas (usadas pelo front para organizar as margens/sessões)
+router.get("/folders", authMiddleware, folderController.listFolders);
+router.post("/folders", authMiddleware, folderController.createFolder);
+
 router.post("/sessions", authMiddleware, sessionController.createSession);
 router.get("/sessions", authMiddleware, sessionController.listSessions);
 

@@ -5,8 +5,17 @@ import {
   timestamp,
   boolean,
   integer,
+  jsonb,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
+
+export const plans = pgTable("plans", {
+  id: serial("id").primaryKey(),
+  name: varchar("name", { length: 100 }).notNull().unique(),
+  price: integer("price").notNull(),
+  details: jsonb("details"),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`),
+});
 
 export const users = pgTable("users", {
   id: serial("id").primaryKey(),
@@ -14,6 +23,14 @@ export const users = pgTable("users", {
   email: varchar("email", { length: 255 }).notNull().unique(),
   passwordHash: varchar("password_hash", { length: 255 }).notNull(),
   age: integer("age"),
+  planId: integer("plan_id").references(() => plans.id),
+});
+
+export const folders = pgTable("folders", {
+  id: serial("id").primaryKey(),
+  name: varchar("name", { length: 255 }).notNull(),
+  userId: integer("user_id").references(() => users.id),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`),
 });
 
 export const sessions = pgTable("sessions", {
@@ -23,13 +40,6 @@ export const sessions = pgTable("sessions", {
   sourceGroup: varchar("source_group", { length: 255 }),
   targetGroup: varchar("target_group", { length: 255 }),
   status: boolean("status").default(false),
-  categoryId: integer("category_id")
-    .references(() => categories.id)
-    .default(null),
+  folderId: integer("folder_id").references(() => folders.id),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`),
-});
-
-export const categories = pgTable("categories", {
-  id: serial("id").primaryKey(),
-  name: varchar("name", { length: 255 }),
 });

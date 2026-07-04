@@ -5,7 +5,7 @@ export default class SessionService {
         this.sessionRepository = sessionRepository;
     }
 
-    async createSession(userId, sessionId, sourceGroupPrefix, targetGroupPrefix) {
+    async createSession(userId, sessionId, sourceGroupPrefix, targetGroupPrefix, folderId = null) {
         // Configura os prefixos ANTES de iniciar a sessão
         if (sourceGroupPrefix && targetGroupPrefix) {
             updateSessionConfig(sessionId, {
@@ -23,7 +23,8 @@ export default class SessionService {
             userId,
             sessionId,
             sourceGroupPrefix,
-            targetGroupPrefix
+            targetGroupPrefix,
+            folderId
         );
         return session;
     }

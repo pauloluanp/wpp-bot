@@ -4,19 +4,27 @@ export default class SessionController {
   }
 
   createSession = async (req, res) => {
-    const { sessionId, sourceGroupPrefix, targetGroupPrefix } = req.body;
+    const { sessionId, sourceGroupPrefix, targetGroupPrefix, folderId } = req.body;
     const userId = req.user.id;
-    
+
     if (!sessionId) {
       return res.status(400).json({ error: 'sessionId obrigatório' });
     }
+
+    // O front envia "geral" (pasta virtual padrão) ou o id numérico de uma pasta.
+    // Qualquer valor não numérico é tratado como "sem pasta" (null).
+    const normalizedFolderId =
+      folderId != null && !Number.isNaN(Number(folderId))
+        ? Number(folderId)
+        : null;
 
     try {
       const session = await this.sessionService.createSession(
         userId,
         sessionId,
         sourceGroupPrefix,
-        targetGroupPrefix
+        targetGroupPrefix,
+        normalizedFolderId
       );
       return res.json(session);
     } catch (error) {

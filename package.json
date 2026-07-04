@@ -9,7 +9,9 @@
     "build": "npm run db:push",
     "db:generate": "drizzle-kit generate",
     "db:push": "drizzle-kit push",
-    "db:migrate": "npm run db:generate && npm run db:push"
+    "db:migrate": "npm run db:generate && npm run db:push",
+    "db:repair": "node src/db/repair-schema.js",
+    "db:seed": "node src/db/seed.js"
   },
   "keywords": [],
   "author": "",

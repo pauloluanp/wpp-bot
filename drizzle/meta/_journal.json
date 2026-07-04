@@ -22,6 +22,27 @@
       "when": 1782445086998,
       "tag": "0002_dusty_post",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1783133111973,
+      "tag": "0003_flowery_mephisto",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1783135269365,
+      "tag": "0004_breezy_talkback",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1783136119106,
+      "tag": "0005_cuddly_union_jack",
+      "breakpoints": true
     }
   ]
 }

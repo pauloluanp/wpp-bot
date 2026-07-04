@@ -2,16 +2,32 @@ import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 
 export default class UserService {
-  constructor(userRepository) {
+  constructor(userRepository, planRepository) {
     this.userRepository = userRepository;
+    this.planRepository = planRepository;
   }
 
-  async createUser({ name, email, password, age }) {
+  async createUser({ name, email, password, age, planId }) {
     const existsUser = await this.userRepository.getUserByEmail(email);
     if (existsUser) {
       const error = new Error("E-mail já cadastrado");
       error.statusCode = 409;
       throw error;
+    }
+
+    // Define o plano: usa o informado (se válido) ou cai no plano padrão (básico).
+    let resolvedPlanId = null;
+    if (planId) {
+      const plan = await this.planRepository.getPlanById(Number(planId));
+      if (!plan) {
+        const error = new Error("Plano informado não existe");
+        error.statusCode = 400;
+        throw error;
+      }
+      resolvedPlanId = plan.id;
+    } else {
+      const defaultPlan = await this.planRepository.getDefaultPlan();
+      resolvedPlanId = defaultPlan ? defaultPlan.id : null;
     }
 
     const saltRounds = Number(process.env.BCRYPT_SALT_ROUNDS || 10);
@@ -21,6 +37,7 @@ export default class UserService {
       email,
       passwordHash,
       age,
+      planId: resolvedPlanId,
     });
 
     return { user, message: "Usuário criado com sucesso" };
@@ -54,6 +71,10 @@ export default class UserService {
       { expiresIn: process.env.JWT_EXPIRES_IN || "1d" }
     );
 
+    const plan = user.planId
+      ? await this.planRepository.getPlanById(user.planId)
+      : null;
+
     return {
       token,
       user: {
@@ -61,7 +82,27 @@ export default class UserService {
         name: user.name,
         email: user.email,
         age: user.age,
+        planId: user.planId,
+        plan: plan
+          ? { id: plan.id, name: plan.name, price: plan.price }
+          : null,
       },
+    };
+  }
+
+  async updatePlan(userId, planId) {
+    const plan = await this.planRepository.getPlanById(Number(planId));
+    if (!plan) {
+      const error = new Error("Plano informado não existe");
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const user = await this.userRepository.updatePlan(userId, plan.id);
+    return {
+      user,
+      plan: { id: plan.id, name: plan.name, price: plan.price },
+      message: "Plano atualizado com sucesso",
     };
   }
 }
