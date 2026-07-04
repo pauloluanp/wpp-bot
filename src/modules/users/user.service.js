@@ -71,38 +71,94 @@ export default class UserService {
       { expiresIn: process.env.JWT_EXPIRES_IN || "1d" }
     );
 
+    return {
+      token,
+      user: await this.#buildUserResponse(user),
+    };
+  }
+
+  // Monta o objeto público do usuário (sem hash de senha) já com o plano embutido.
+  async #buildUserResponse(user) {
     const plan = user.planId
       ? await this.planRepository.getPlanById(user.planId)
       : null;
 
     return {
-      token,
-      user: {
-        id: user.id,
-        name: user.name,
-        email: user.email,
-        age: user.age,
-        planId: user.planId,
-        plan: plan
-          ? { id: plan.id, name: plan.name, price: plan.price }
-          : null,
-      },
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      age: user.age,
+      planId: user.planId,
+      plan: plan
+        ? {
+            id: plan.id,
+            name: plan.name,
+            price: plan.price,
+            details: plan.details,
+          }
+        : null,
     };
   }
 
-  async updatePlan(userId, planId) {
-    const plan = await this.planRepository.getPlanById(Number(planId));
-    if (!plan) {
-      const error = new Error("Plano informado não existe");
+  async getMe(userId) {
+    const user = await this.userRepository.getUserById(userId);
+    if (!user) {
+      const error = new Error("Usuário não encontrado");
+      error.statusCode = 404;
+      throw error;
+    }
+
+    return this.#buildUserResponse(user);
+  }
+
+  async updateProfile(userId, { name, age }) {
+    const current = await this.userRepository.getUserById(userId);
+    if (!current) {
+      const error = new Error("Usuário não encontrado");
+      error.statusCode = 404;
+      throw error;
+    }
+
+    // Mantém o valor atual quando o campo não é enviado.
+    const updated = await this.userRepository.updateProfile(userId, {
+      name: name !== undefined ? name : current.name,
+      age: age !== undefined ? age : current.age,
+    });
+
+    return {
+      user: await this.#buildUserResponse(updated),
+      message: "Perfil atualizado com sucesso",
+    };
+  }
+
+  async changePassword(userId, { currentPassword, newPassword }) {
+    if (!newPassword || newPassword.length < 6) {
+      const error = new Error("A nova senha deve ter ao menos 6 caracteres");
       error.statusCode = 400;
       throw error;
     }
 
-    const user = await this.userRepository.updatePlan(userId, plan.id);
-    return {
-      user,
-      plan: { id: plan.id, name: plan.name, price: plan.price },
-      message: "Plano atualizado com sucesso",
-    };
+    const user = await this.userRepository.getUserById(userId);
+    if (!user) {
+      const error = new Error("Usuário não encontrado");
+      error.statusCode = 404;
+      throw error;
+    }
+
+    const currentIsValid = await bcrypt.compare(
+      currentPassword || "",
+      user.passwordHash
+    );
+    if (!currentIsValid) {
+      const error = new Error("Senha atual incorreta");
+      error.statusCode = 401;
+      throw error;
+    }
+
+    const saltRounds = Number(process.env.BCRYPT_SALT_ROUNDS || 10);
+    const passwordHash = await bcrypt.hash(newPassword, saltRounds);
+    await this.userRepository.updatePassword(userId, passwordHash);
+
+    return { message: "Senha alterada com sucesso" };
   }
 }

@@ -30,6 +30,38 @@ export default class UserRepository {
     return user;
   }
 
+  async getUserById(id) {
+    const [user] = await this.db.select().from(users).where(eq(users.id, id));
+
+    return user;
+  }
+
+  async updateProfile(userId, { name, age }) {
+    const [user] = await this.db
+      .update(users)
+      .set({ name, age })
+      .where(eq(users.id, userId))
+      .returning({
+        id: users.id,
+        name: users.name,
+        email: users.email,
+        age: users.age,
+        planId: users.planId,
+      });
+
+    return user;
+  }
+
+  async updatePassword(userId, passwordHash) {
+    const [user] = await this.db
+      .update(users)
+      .set({ passwordHash })
+      .where(eq(users.id, userId))
+      .returning({ id: users.id });
+
+    return user;
+  }
+
   async updatePlan(userId, planId) {
     const [user] = await this.db
       .update(users)

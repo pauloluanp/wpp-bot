@@ -17,7 +17,13 @@ router.post("/login", userController.login);
 
 // Planos
 router.get("/plans", planController.listPlans);
-router.patch("/me/plan", authMiddleware, userController.updatePlan);
+
+// Perfil do usuário logado
+router.get("/me", authMiddleware, userController.getMe);
+router.patch("/me", authMiddleware, userController.updateProfile);
+router.patch("/me/password", authMiddleware, userController.changePassword);
+// Obs.: a troca de plano NÃO é self-service (o pagamento vem antes). O usuário
+// é encaminhado ao WhatsApp e o plano é aplicado via script de admin (db:set-plan).
 
 // Pastas (usadas pelo front para organizar as margens/sessões)
 router.get("/folders", authMiddleware, folderController.listFolders);

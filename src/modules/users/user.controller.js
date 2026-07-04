@@ -24,16 +24,43 @@ export default class UserController {
     }
   };
 
-  updatePlan = async (req, res) => {
-    const userId = req.user.id;
-    const { planId } = req.body;
+  getMe = async (req, res) => {
+    try {
+      const user = await this.userService.getMe(req.user.id);
+      return res.json(user);
+    } catch (error) {
+      return res.status(error.statusCode || 500).json({ error: error.message });
+    }
+  };
 
-    if (!planId) {
-      return res.status(400).json({ error: "planId é obrigatório" });
+  updateProfile = async (req, res) => {
+    const { name, age } = req.body;
+
+    try {
+      const result = await this.userService.updateProfile(req.user.id, {
+        name,
+        age,
+      });
+      return res.json(result);
+    } catch (error) {
+      return res.status(error.statusCode || 500).json({ error: error.message });
+    }
+  };
+
+  changePassword = async (req, res) => {
+    const { currentPassword, newPassword } = req.body;
+
+    if (!currentPassword || !newPassword) {
+      return res
+        .status(400)
+        .json({ error: "Senha atual e nova senha são obrigatórias" });
     }
 
     try {
-      const result = await this.userService.updatePlan(userId, planId);
+      const result = await this.userService.changePassword(req.user.id, {
+        currentPassword,
+        newPassword,
+      });
       return res.json(result);
     } catch (error) {
       return res.status(error.statusCode || 500).json({ error: error.message });
