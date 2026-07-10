@@ -22,6 +22,8 @@ export const users = pgTable("users", {
   name: varchar("name", { length: 255 }),
   email: varchar("email", { length: 255 }).notNull().unique(),
   passwordHash: varchar("password_hash", { length: 255 }).notNull(),
+  // Papel do usuário: "admin" (pode cadastrar novos usuários) ou "user" (comum).
+  role: varchar("role", { length: 20 }).notNull().default("user"),
   age: integer("age"),
   planId: integer("plan_id").references(() => plans.id),
 });

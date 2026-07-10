@@ -1,19 +1,38 @@
-import { eq } from "drizzle-orm";
-import { users } from "../../db/schema.js";
+import { eq, asc } from "drizzle-orm";
+import { users, plans } from "../../db/schema.js";
 
 export default class UserRepository {
   constructor(db) {
     this.db = db;
   }
 
-  async createUser({ name, email, passwordHash, age, planId }) {
+  // Lista os usuários para a área administrativa. Nunca expõe passwordHash e já
+  // traz o nome do plano via leftJoin (planId pode ser nulo).
+  async listUsers() {
+    return this.db
+      .select({
+        id: users.id,
+        name: users.name,
+        email: users.email,
+        role: users.role,
+        age: users.age,
+        planId: users.planId,
+        planName: plans.name,
+      })
+      .from(users)
+      .leftJoin(plans, eq(users.planId, plans.id))
+      .orderBy(asc(users.id));
+  }
+
+  async createUser({ name, email, passwordHash, age, planId, role }) {
     const [user] = await this.db
       .insert(users)
-      .values({ name, email, passwordHash, age, planId })
+      .values({ name, email, passwordHash, age, planId, role })
       .returning({
         id: users.id,
         name: users.name,
         email: users.email,
+        role: users.role,
         age: users.age,
         planId: users.planId,
       });

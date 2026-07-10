@@ -5,6 +5,7 @@ import { makeUserController } from "./modules/users/user.module.js";
 import { makeFolderController } from "./modules/folders/folder.module.js";
 import { makePlanModule } from "./modules/plans/plan.module.js";
 import { authMiddleware } from "./middlewares/auth.middleware.js";
+import { adminMiddleware } from "./middlewares/admin.middleware.js";
 
 const router = express.Router();
 const sessionController = makeSessionController();
@@ -12,7 +13,9 @@ const userController = makeUserController();
 const folderController = makeFolderController();
 const { planController } = makePlanModule();
 
-router.post("/users", userController.createUser);
+// Criação/listagem de usuários é restrita a administradores.
+router.post("/users", authMiddleware, adminMiddleware, userController.createUser);
+router.get("/users", authMiddleware, adminMiddleware, userController.listUsers);
 router.post("/login", userController.login);
 
 // Planos

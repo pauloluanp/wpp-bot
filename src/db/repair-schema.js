@@ -27,12 +27,29 @@ const steps = [
     )`,
   },
   {
+    label: "Garantindo coluna sessions.user_id",
+    query: sql`ALTER TABLE "sessions" ADD COLUMN IF NOT EXISTS "user_id" integer`,
+  },
+  {
     label: "Garantindo coluna sessions.folder_id",
     query: sql`ALTER TABLE "sessions" ADD COLUMN IF NOT EXISTS "folder_id" integer`,
   },
   {
     label: "Garantindo coluna users.plan_id",
     query: sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "plan_id" integer`,
+  },
+  {
+    label: "Garantindo coluna users.role",
+    query: sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "role" varchar(20) DEFAULT 'user' NOT NULL`,
+  },
+  {
+    label: "Garantindo FK sessions.user_id -> users.id",
+    query: sql`DO $$ BEGIN
+      IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'sessions_user_id_users_id_fk') THEN
+        ALTER TABLE "sessions" ADD CONSTRAINT "sessions_user_id_users_id_fk"
+          FOREIGN KEY ("user_id") REFERENCES "users"("id");
+      END IF;
+    END $$`,
   },
   {
     label: "Garantindo FK folders.user_id -> users.id",

@@ -4,7 +4,7 @@ export default class UserController {
   }
 
   createUser = async (req, res) => {
-    const { name, email, password, age, planId } = req.body;
+    const { name, email, password, age, planId, role } = req.body;
 
     if (!email || !password) {
       return res.status(400).json({ error: "E-mail e senha são obrigatórios" });
@@ -17,8 +17,18 @@ export default class UserController {
         password,
         age,
         planId,
+        role,
       });
       return res.status(201).json(user);
+    } catch (error) {
+      return res.status(error.statusCode || 500).json({ error: error.message });
+    }
+  };
+
+  listUsers = async (req, res) => {
+    try {
+      const result = await this.userService.listUsers();
+      return res.json(result);
     } catch (error) {
       return res.status(error.statusCode || 500).json({ error: error.message });
     }

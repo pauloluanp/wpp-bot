@@ -1,17 +1,31 @@
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 
+// Papéis válidos de usuário. "user" é o padrão (comum); "admin" pode cadastrar
+// novos usuários.
+const VALID_ROLES = ["admin", "user"];
+
 export default class UserService {
   constructor(userRepository, planRepository) {
     this.userRepository = userRepository;
     this.planRepository = planRepository;
   }
 
-  async createUser({ name, email, password, age, planId }) {
+  async createUser({ name, email, password, age, planId, role }) {
     const existsUser = await this.userRepository.getUserByEmail(email);
     if (existsUser) {
       const error = new Error("E-mail já cadastrado");
       error.statusCode = 409;
+      throw error;
+    }
+
+    // Papel: usa o informado (se válido) ou cai no padrão "user" quando ausente.
+    const resolvedRole = role ? role : "user";
+    if (!VALID_ROLES.includes(resolvedRole)) {
+      const error = new Error(
+        `Papel inválido. Valores aceitos: ${VALID_ROLES.join(", ")}`
+      );
+      error.statusCode = 400;
       throw error;
     }
 
@@ -38,9 +52,17 @@ export default class UserService {
       passwordHash,
       age,
       planId: resolvedPlanId,
+      role: resolvedRole,
     });
 
     return { user, message: "Usuário criado com sucesso" };
+  }
+
+  // Lista todos os usuários (uso administrativo). Retorna o total junto para o
+  // painel, no mesmo formato { total, data } usado em outras listagens do front.
+  async listUsers() {
+    const data = await this.userRepository.listUsers();
+    return { total: data.length, data };
   }
 
   async login({ email, password }) {
@@ -87,6 +109,7 @@ export default class UserService {
       id: user.id,
       name: user.name,
       email: user.email,
+      role: user.role,
       age: user.age,
       planId: user.planId,
       plan: plan
