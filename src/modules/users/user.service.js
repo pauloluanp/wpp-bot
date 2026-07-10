@@ -12,7 +12,9 @@ export default class UserService {
   }
 
   async createUser({ name, email, password, age, planId, role }) {
-    const existsUser = await this.userRepository.getUserByEmail(email);
+    const normalizedEmail = (email || "").trim().toLowerCase();
+    const existsUser =
+      await this.userRepository.getUserByEmail(normalizedEmail);
     if (existsUser) {
       const error = new Error("E-mail já cadastrado");
       error.statusCode = 409;
@@ -23,7 +25,7 @@ export default class UserService {
     const resolvedRole = role ? role : "user";
     if (!VALID_ROLES.includes(resolvedRole)) {
       const error = new Error(
-        `Papel inválido. Valores aceitos: ${VALID_ROLES.join(", ")}`
+        `Papel inválido. Valores aceitos: ${VALID_ROLES.join(", ")}`,
       );
       error.statusCode = 400;
       throw error;
@@ -48,7 +50,7 @@ export default class UserService {
     const passwordHash = await bcrypt.hash(password, saltRounds);
     const user = await this.userRepository.createUser({
       name,
-      email,
+      email: normalizedEmail,
       passwordHash,
       age,
       planId: resolvedPlanId,
@@ -66,7 +68,8 @@ export default class UserService {
   }
 
   async login({ email, password }) {
-    const user = await this.userRepository.getUserByEmail(email);
+    const normalizedEmail = (email || "").trim().toLowerCase();
+    const user = await this.userRepository.getUserByEmail(normalizedEmail);
     if (!user) {
       const error = new Error("E-mail ou senha inválidos");
       error.statusCode = 401;
@@ -87,11 +90,9 @@ export default class UserService {
       throw error;
     }
 
-    const token = jwt.sign(
-      { id: user.id, email: user.email },
-      secret,
-      { expiresIn: process.env.JWT_EXPIRES_IN || "1d" }
-    );
+    const token = jwt.sign({ id: user.id, email: user.email }, secret, {
+      expiresIn: process.env.JWT_EXPIRES_IN || "1d",
+    });
 
     return {
       token,
@@ -170,7 +171,7 @@ export default class UserService {
 
     const currentIsValid = await bcrypt.compare(
       currentPassword || "",
-      user.passwordHash
+      user.passwordHash,
     );
     if (!currentIsValid) {
       const error = new Error("Senha atual incorreta");
