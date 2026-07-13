@@ -2,6 +2,7 @@ import {
   pgTable,
   serial,
   varchar,
+  text,
   timestamp,
   boolean,
   integer,
@@ -44,4 +45,19 @@ export const sessions = pgTable("sessions", {
   status: boolean("status").default(false),
   folderId: integer("folder_id").references(() => folders.id),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`),
+});
+
+// Credenciais do Mercado Livre por usuário (1:1). Usadas para gerar os links de
+// afiliado. `cookie_string`/`csrf_token` são longos e expiram periodicamente.
+export const mlCredentials = pgTable("ml_credentials", {
+  id: serial("id").primaryKey(),
+  userId: integer("user_id")
+    .references(() => users.id)
+    .notNull()
+    .unique(),
+  mlAffiliateTag: varchar("ml_affiliate_tag", { length: 255 }),
+  cookieString: text("cookie_string"),
+  csrfToken: text("csrf_token"),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`),
 });

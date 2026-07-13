@@ -4,6 +4,7 @@ import { getTelegramStatus } from "./manager.js";
 import { makeUserController } from "./modules/users/user.module.js";
 import { makeFolderController } from "./modules/folders/folder.module.js";
 import { makePlanModule } from "./modules/plans/plan.module.js";
+import { makeMlCredentialController } from "./modules/mlCredentials/mlCredential.module.js";
 import { authMiddleware } from "./middlewares/auth.middleware.js";
 import { adminMiddleware } from "./middlewares/admin.middleware.js";
 
@@ -12,6 +13,7 @@ const sessionController = makeSessionController();
 const userController = makeUserController();
 const folderController = makeFolderController();
 const { planController } = makePlanModule();
+const mlCredentialController = makeMlCredentialController();
 
 // Criação/listagem de usuários é restrita a administradores.
 router.post("/users", authMiddleware, adminMiddleware, userController.createUser);
@@ -27,6 +29,10 @@ router.patch("/me", authMiddleware, userController.updateProfile);
 router.patch("/me/password", authMiddleware, userController.changePassword);
 // Obs.: a troca de plano NÃO é self-service (o pagamento vem antes). O usuário
 // é encaminhado ao WhatsApp e o plano é aplicado via script de admin (db:set-plan).
+
+// Credenciais do Mercado Livre do usuário logado (o service exige plano premium).
+router.get("/me/ml-credentials", authMiddleware, mlCredentialController.getCredentials);
+router.put("/me/ml-credentials", authMiddleware, mlCredentialController.saveCredentials);
 
 // Pastas (usadas pelo front para organizar as margens/sessões)
 router.get("/folders", authMiddleware, folderController.listFolders);

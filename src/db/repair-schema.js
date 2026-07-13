@@ -43,6 +43,28 @@ const steps = [
     query: sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "role" varchar(20) DEFAULT 'user' NOT NULL`,
   },
   {
+    label: "Garantindo tabela ml_credentials",
+    query: sql`CREATE TABLE IF NOT EXISTS "ml_credentials" (
+      "id" serial PRIMARY KEY NOT NULL,
+      "user_id" integer NOT NULL,
+      "ml_affiliate_tag" varchar(255),
+      "cookie_string" text,
+      "csrf_token" text,
+      "created_at" timestamp DEFAULT CURRENT_TIMESTAMP,
+      "updated_at" timestamp DEFAULT CURRENT_TIMESTAMP,
+      CONSTRAINT "ml_credentials_user_id_unique" UNIQUE ("user_id")
+    )`,
+  },
+  {
+    label: "Garantindo FK ml_credentials.user_id -> users.id",
+    query: sql`DO $$ BEGIN
+      IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ml_credentials_user_id_users_id_fk') THEN
+        ALTER TABLE "ml_credentials" ADD CONSTRAINT "ml_credentials_user_id_users_id_fk"
+          FOREIGN KEY ("user_id") REFERENCES "users"("id");
+      END IF;
+    END $$`,
+  },
+  {
     label: "Garantindo FK sessions.user_id -> users.id",
     query: sql`DO $$ BEGIN
       IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'sessions_user_id_users_id_fk') THEN
