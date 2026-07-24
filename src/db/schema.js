@@ -43,6 +43,9 @@ export const sessions = pgTable("sessions", {
   sourceGroup: varchar("source_group", { length: 255 }),
   targetGroup: varchar("target_group", { length: 255 }),
   status: boolean("status").default(false),
+  // Quando true, a margem só repassa promoções do Mercado Livre (com link de
+  // afiliado). Quando false, repassa todas as mensagens como estão.
+  convertLink: boolean("convert_link").notNull().default(false),
   folderId: integer("folder_id").references(() => folders.id),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`),
 });

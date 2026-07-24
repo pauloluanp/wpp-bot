@@ -42,7 +42,7 @@ Outros pontos:
 
 ## Planos e pagamento
 
-- Planos: `básico100`, `pro200`, `premium300`.
+- Planos: `básico`, `pro`, `premium`.
 - **Troca de plano NÃO é self-service**: o pagamento vem antes; o usuário é encaminhado ao
   WhatsApp e o plano é aplicado por admin via `db:set-plan`. Não implemente upgrade
   automático sem alinhar isso.

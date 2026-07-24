@@ -10,8 +10,10 @@ import fs from "fs";
 import P from "pino";
 import TelegramBot from "node-telegram-bot-api";
 import { db } from "./db/index.js";
-import { sessions as dbSessions } from "./db/schema.js";
+import { sessions as dbSessions, mlCredentials } from "./db/schema.js";
 import { eq } from "drizzle-orm";
+import { convertMessageText } from "./lib/mercadoLivre/linkReplacer.js";
+import { ML_ERROR } from "./lib/mercadoLivre/mlAffiliate.service.js";
 
 const sessions = new Map();
 const qrcodes = new Map();
@@ -294,8 +296,10 @@ async function sendTelegramMessage(bot, chatId, media) {
   await bot.sendDocument(chatId, media.buffer, { caption }, fileOptions);
 }
 
-async function createTelegramPayload(sock, message, fallbackText) {
-  const caption = getMessageCaption(message);
+// `captionOverride` é usado quando a promoção teve links do Mercado Livre
+// convertidos: sem ele, o Telegram sairia com o link original, sem afiliado.
+async function createTelegramPayload(sock, message, fallbackText, captionOverride) {
+  const caption = captionOverride ?? getMessageCaption(message);
   const content = message.message || {};
 
   if (content.imageMessage) {
@@ -351,6 +355,150 @@ async function createTelegramPayload(sock, message, fallbackText) {
     type: "text",
     text: caption || fallbackText,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Mercado Livre: conversão de links de afiliado
+// ---------------------------------------------------------------------------
+
+// O manager é chaveado por sessionId; o dono só existe no banco. Cacheamos para
+// não consultar a cada promoção.
+const sessionOwners = new Map(); // sessionId -> userId
+const credentialAlerts = new Map(); // sessionId -> timestamp do último aviso
+
+const CREDENTIAL_ALERT_COOLDOWN_MS = 6 * 60 * 60 * 1000;
+
+async function getSessionUserId(sessionId) {
+  if (sessionOwners.has(sessionId)) return sessionOwners.get(sessionId);
+
+  const [row] = await db
+    .select({ userId: dbSessions.userId })
+    .from(dbSessions)
+    .where(eq(dbSessions.sessionId, sessionId));
+
+  const userId = row?.userId ?? null;
+  sessionOwners.set(sessionId, userId);
+  return userId;
+}
+
+async function getOwnerMlCredentials(sessionId) {
+  const userId = await getSessionUserId(sessionId);
+  if (!userId) return null;
+
+  const [row] = await db
+    .select()
+    .from(mlCredentials)
+    .where(eq(mlCredentials.userId, userId));
+
+  // Sem tag ou sem cookie, o usuário simplesmente não usa o recurso.
+  if (!row?.mlAffiliateTag || !row?.cookieString) return null;
+
+  return { userId, credentials: row };
+}
+
+// O JID do próprio bot vem como "5511999999999:12@s.whatsapp.net" — o sufixo de
+// device (":12") precisa sair, senão o envio falha.
+function getOwnJid(sock) {
+  const rawId = sock?.user?.id;
+  if (!rawId) return null;
+  return rawId.replace(/:\d+(?=@)/, "");
+}
+
+// Avisa o dono no próprio chip. Com cooldown: 30 promoções falhando em sequência
+// não podem virar 30 mensagens no WhatsApp dele.
+async function notifyCredentialsExpired(sock, sessionId, errorType) {
+  const lastAlert = credentialAlerts.get(sessionId) || 0;
+  if (Date.now() - lastAlert < CREDENTIAL_ALERT_COOLDOWN_MS) return;
+
+  const jid = getOwnJid(sock);
+  if (!jid) return;
+
+  const detail =
+    errorType === ML_ERROR.CREDENTIALS_EXPIRED
+      ? "Suas credenciais do Mercado Livre expiraram."
+      : "Não consegui converter o link do Mercado Livre.";
+
+  const text =
+    `⚠️ *Conversão do Mercado Livre falhou*\n\n${detail}\n\n` +
+    `As promoções do Mercado Livre *não estão sendo enviadas* para os grupos, ` +
+    `para não divulgar link sem a sua tag de afiliado.\n\n` +
+    `Atualize o cookie e o CSRF token no painel para voltar a converter os links.`;
+
+  try {
+    await sock.sendMessage(jid, { text });
+    credentialAlerts.set(sessionId, Date.now());
+    console.log(`[${sessionId}] 📨 Aviso de credencial enviado ao dono (${jid}).`);
+  } catch (error) {
+    console.error(`[${sessionId}] ❌ Falha ao avisar o dono: ${error.message}`);
+  }
+}
+
+// Espelha o createTelegramPayload, mas para reenviar no WhatsApp. Só é usado
+// quando o texto muda (promo do ML), porque o forward nativo não permite editar
+// o conteúdo da mensagem.
+async function buildWhatsAppPayload(sock, message, caption) {
+  const content = message.message || {};
+
+  if (content.imageMessage) {
+    return { image: await downloadWhatsAppMedia(sock, message), caption };
+  }
+
+  if (content.videoMessage) {
+    return { video: await downloadWhatsAppMedia(sock, message), caption };
+  }
+
+  if (content.documentMessage) {
+    return {
+      document: await downloadWhatsAppMedia(sock, message),
+      caption,
+      fileName: content.documentMessage.fileName || "arquivo",
+      mimetype: content.documentMessage.mimetype,
+    };
+  }
+
+  // Áudio e figurinha não têm texto para converter — não deveriam chegar aqui.
+  return { text: caption };
+}
+
+/**
+ * Decide o que fazer com uma promoção antes de repassá-la.
+ *
+ * @returns {Promise<{ action: "forward" } | { action: "rebuild", caption: string } | { action: "block", errorType: string }>}
+ *   - forward: não é do Mercado Livre (ou o dono não usa o recurso) → fluxo normal, intacto.
+ *   - rebuild: links convertidos → a mensagem precisa ser remontada com o novo texto.
+ *   - block:   conversão falhou → não enviar e avisar o dono.
+ */
+async function resolveMercadoLivreConversion(sessionId, message) {
+  const caption = getMessageCaption(message);
+  if (!caption) return { action: "forward" };
+
+  let owner;
+  try {
+    owner = await getOwnerMlCredentials(sessionId);
+  } catch (error) {
+    console.error(`[${sessionId}] ❌ Erro ao buscar credenciais ML: ${error.message}`);
+    return { action: "forward" };
+  }
+
+  // Quem não cadastrou credenciais continua recebendo as promoções como sempre.
+  if (!owner) return { action: "forward" };
+
+  const result = await convertMessageText(caption, owner.credentials, owner.userId);
+
+  if (!result.hadMl) return { action: "forward" };
+
+  if (result.failed) {
+    console.warn(
+      `[${sessionId}] 🛑 Conversão do ML falhou (${result.failed.type}) para ${result.failed.url}`,
+    );
+    return { action: "block", errorType: result.failed.type };
+  }
+
+  // Voltou a converter: zera o cooldown para que uma futura expiração avise de imediato.
+  credentialAlerts.delete(sessionId);
+
+  console.log(`[${sessionId}] 🔗 Link(s) do Mercado Livre convertido(s) para afiliado.`);
+  return { action: "rebuild", caption: result.text };
 }
 
 export async function resetAllSessionStatus() {
@@ -414,6 +562,7 @@ export async function startSession(sessionId) {
           sourceGroupPrefix: dbSession.sourceGroup,
           targetGroupPrefix: dbSession.targetGroup,
           telegramTargetGroups: [],
+          convertLink: dbSession.convertLink ?? false,
           delayMs: DEFAULT_DELAY_MS,
         };
         console.log(`✅ [${sessionId}] Configuração carregada do banco.`);
@@ -445,6 +594,7 @@ export async function startSession(sessionId) {
       sourceGroupPrefix: null,
       targetGroupPrefix: null,
       telegramTargetGroups: [],
+      convertLink: false,
       delayMs: DEFAULT_DELAY_MS,
     });
   }
@@ -730,6 +880,43 @@ export async function startSession(sessionId) {
           return;
         }
 
+        // Modo da margem (config.convertLink):
+        // - false → repassa TODAS as mensagens como estão (sem conversão).
+        // - true  → repassa SÓ promoções do Mercado Livre, com o link trocado pelo
+        //   de afiliado do dono. Se a conversão falhar, nada é enviado (nem WhatsApp
+        //   nem Telegram) para não divulgar a oferta sem a tag; se a mensagem não for
+        //   do Mercado Livre, ela é ignorada.
+        let outgoingText = text;
+        let rebuiltPayload = null;
+
+        if (currentConfig.convertLink === true) {
+          const conversion = await resolveMercadoLivreConversion(sessionId, frozenMsg);
+
+          if (conversion.action === "block") {
+            console.log(
+              `[${sessionId}] 🛑 Envio cancelado: promoção do Mercado Livre não convertida (ID: ${msg.key.id})`,
+            );
+            await notifyCredentialsExpired(currentSock, sessionId, conversion.errorType);
+            return;
+          }
+
+          if (conversion.action === "forward") {
+            console.log(
+              `[${sessionId}] ⏭️ Mensagem sem link do Mercado Livre ignorada (margem de conversão) (ID: ${msg.key.id})`,
+            );
+            return;
+          }
+
+          // action === "rebuild": links convertidos → remonta a mensagem.
+          outgoingText = conversion.caption;
+          // A mídia é baixada uma única vez e reusada em todos os destinos.
+          rebuiltPayload = await buildWhatsAppPayload(
+            currentSock,
+            deepCloneMessage(frozenMsg),
+            conversion.caption,
+          );
+        }
+
         try {
           for (const target of currentConfig.targetGroups || []) {
             console.log(
@@ -742,11 +929,17 @@ export async function startSession(sessionId) {
               console.warn(`[${sessionId}] ⚠️ Falha ao simular digitação: ${e.message}`);
             }
 
-            // Clona a mensagem congelada para evitar que o Baileys a corrompa ao enviar para o próximo alvo do loop
-            const targetMsgCopy = deepCloneMessage(frozenMsg);
+            if (rebuiltPayload) {
+              // O forward do Baileys copia a mensagem byte a byte e não permite
+              // editar o texto — por isso a promo do ML é remontada.
+              await currentSock.sendMessage(target.id, rebuiltPayload);
+            } else {
+              // Clona a mensagem congelada para evitar que o Baileys a corrompa ao enviar para o próximo alvo do loop
+              const targetMsgCopy = deepCloneMessage(frozenMsg);
 
-            // Usa a funcionalidade nativa de forward do Baileys para repassar qualquer tipo de mensagem com perfeição
-            await currentSock.sendMessage(target.id, { forward: targetMsgCopy });
+              // Usa a funcionalidade nativa de forward do Baileys para repassar qualquer tipo de mensagem com perfeição
+              await currentSock.sendMessage(target.id, { forward: targetMsgCopy });
+            }
 
             // Log detalhado do envio
             console.log("\n" + "=".repeat(60));
@@ -758,7 +951,7 @@ export async function startSession(sessionId) {
               `📍 Grupo de Destino: ${target.name || "Nome não disponível"}`,
             );
             console.log(`🆔 ID do Grupo: ${target.id}`);
-            console.log(`💬 Mensagem: "${text}"`);
+            console.log(`💬 Mensagem: "${outgoingText}"`);
             console.log("=".repeat(60) + "\n");
           }
 
@@ -773,7 +966,9 @@ export async function startSession(sessionId) {
               const telegramPayload = await createTelegramPayload(
                 currentSock,
                 deepCloneMessage(frozenMsg),
-                text,
+                outgoingText,
+                // Só sobrescreve a legenda quando a promo do ML foi remontada.
+                rebuiltPayload ? outgoingText : undefined,
               );
 
               for (const target of telegramTargets) {
@@ -790,7 +985,7 @@ export async function startSession(sessionId) {
                 console.log("=".repeat(60));
                 console.log(`📍 Grupo Telegram: ${target.title}`);
                 console.log(`🆔 ID do Grupo Telegram: ${target.id}`);
-                console.log(`💬 Mensagem: "${text}"`);
+                console.log(`💬 Mensagem: "${outgoingText}"`);
                 console.log("=".repeat(60) + "\n");
               }
             }
@@ -902,6 +1097,7 @@ export function updateSessionConfig(sessionId, config) {
       sourceGroupPrefix: null,
       targetGroupPrefix: null,
       telegramTargetGroups: [],
+      convertLink: false,
       delayMs: DEFAULT_DELAY_MS,
       ...config, // Aplica as configurações fornecidas
     });
@@ -1053,6 +1249,8 @@ export function deleteSession(sessionId) {
   qrcodes.delete(sessionId);
   sessionConfigs.delete(sessionId);
   sessionSchedules.delete(sessionId);
+  sessionOwners.delete(sessionId);
+  credentialAlerts.delete(sessionId);
 
   // Limpa mensagens pendentes
   for (const [msgId, data] of pendingMessages.entries()) {

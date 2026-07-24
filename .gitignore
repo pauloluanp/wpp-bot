@@ -2,3 +2,6 @@ node_modules
 package-lock.json
 sessions
 .env
+
+# Transcritos das sessões do Claude Code (contexto local, não versionado)
+.claude-history
