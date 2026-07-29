@@ -47,24 +47,59 @@ const steps = [
     query: sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "role" varchar(20) DEFAULT 'user' NOT NULL`,
   },
   {
+    // Cria a tabela já no formato novo (por sessão) em bancos zerados. Em bancos
+    // que já tinham a versão por-usuário, os passos seguintes fazem a migração.
     label: "Garantindo tabela ml_credentials",
     query: sql`CREATE TABLE IF NOT EXISTS "ml_credentials" (
       "id" serial PRIMARY KEY NOT NULL,
-      "user_id" integer NOT NULL,
+      "session_id" integer,
       "ml_affiliate_tag" varchar(255),
       "cookie_string" text,
       "csrf_token" text,
       "created_at" timestamp DEFAULT CURRENT_TIMESTAMP,
-      "updated_at" timestamp DEFAULT CURRENT_TIMESTAMP,
-      CONSTRAINT "ml_credentials_user_id_unique" UNIQUE ("user_id")
+      "updated_at" timestamp DEFAULT CURRENT_TIMESTAMP
     )`,
   },
   {
-    label: "Garantindo FK ml_credentials.user_id -> users.id",
+    // Migração user_id -> session_id (idempotente). Ordem: adiciona session_id,
+    // remove constraints antigas, descarta linhas por-usuário órfãs, dropa user_id.
+    label: "Migrando ml_credentials para session_id",
+    query: sql`ALTER TABLE "ml_credentials" ADD COLUMN IF NOT EXISTS "session_id" integer`,
+  },
+  {
+    label: "Removendo constraints legadas de ml_credentials.user_id",
     query: sql`DO $$ BEGIN
-      IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ml_credentials_user_id_users_id_fk') THEN
-        ALTER TABLE "ml_credentials" ADD CONSTRAINT "ml_credentials_user_id_users_id_fk"
-          FOREIGN KEY ("user_id") REFERENCES "users"("id");
+      ALTER TABLE "ml_credentials" DROP CONSTRAINT IF EXISTS "ml_credentials_user_id_users_id_fk";
+      ALTER TABLE "ml_credentials" DROP CONSTRAINT IF EXISTS "ml_credentials_user_id_unique";
+    END $$`,
+  },
+  {
+    // Linhas antigas (por usuário) não têm session_id e não têm como ser mapeadas.
+    label: "Descartando credenciais órfãs (sem session_id)",
+    query: sql`DELETE FROM "ml_credentials" WHERE "session_id" IS NULL`,
+  },
+  {
+    label: "Removendo coluna legada ml_credentials.user_id",
+    query: sql`ALTER TABLE "ml_credentials" DROP COLUMN IF EXISTS "user_id"`,
+  },
+  {
+    label: "Garantindo ml_credentials.session_id NOT NULL",
+    query: sql`ALTER TABLE "ml_credentials" ALTER COLUMN "session_id" SET NOT NULL`,
+  },
+  {
+    label: "Garantindo UNIQUE ml_credentials.session_id",
+    query: sql`DO $$ BEGIN
+      IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ml_credentials_session_id_unique') THEN
+        ALTER TABLE "ml_credentials" ADD CONSTRAINT "ml_credentials_session_id_unique" UNIQUE ("session_id");
+      END IF;
+    END $$`,
+  },
+  {
+    label: "Garantindo FK ml_credentials.session_id -> sessions.id",
+    query: sql`DO $$ BEGIN
+      IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ml_credentials_session_id_sessions_id_fk') THEN
+        ALTER TABLE "ml_credentials" ADD CONSTRAINT "ml_credentials_session_id_sessions_id_fk"
+          FOREIGN KEY ("session_id") REFERENCES "sessions"("id") ON DELETE CASCADE;
       END IF;
     END $$`,
   },

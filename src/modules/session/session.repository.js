@@ -6,16 +6,24 @@ export default class SessionRepository {
     this.db = db;
   }
 
-  async createSession(userId, sessionId, sourceGroupPrefix, targetGroupPrefix, folderId = null, convertLink = false) {
+  async createSession(userId, sessionId, sourceGroupPrefix, targetGroupPrefix, folderId = null) {
     return this.db.insert(sessions).values({
       userId,
       sessionId,
       sourceGroup: sourceGroupPrefix,
       targetGroup: targetGroupPrefix,
       folderId,
-      convertLink,
       status: false
     });
+  }
+
+  // Liga/desliga o modo de conversão da margem. Derivado: fica true quando a
+  // margem passa a ter credenciais do Mercado Livre cadastradas.
+  async setConvertLink(sessionId, userId, convertLink) {
+    return this.db
+      .update(sessions)
+      .set({ convertLink })
+      .where(and(eq(sessions.sessionId, sessionId), eq(sessions.userId, userId)));
   }
 
   async startSession(sessionId, userId) {

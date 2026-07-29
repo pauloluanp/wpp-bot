@@ -6,23 +6,24 @@ export default class MlCredentialRepository {
     this.db = db;
   }
 
-  async getByUserId(userId) {
+  // `sessionRowId` é o id serial da sessão (sessions.id), não o nome da margem.
+  async getBySessionId(sessionRowId) {
     const [row] = await this.db
       .select()
       .from(mlCredentials)
-      .where(eq(mlCredentials.userId, userId));
+      .where(eq(mlCredentials.sessionId, sessionRowId));
 
     return row;
   }
 
-  // Cria ou atualiza as credenciais do usuário (1:1). `user_id` é único, então
-  // o conflito recai sobre ele e apenas atualizamos os campos + updated_at.
-  async upsert(userId, { mlAffiliateTag, cookieString, csrfToken }) {
+  // Cria ou atualiza as credenciais da margem (1:1 por sessão). `session_id` é
+  // único, então o conflito recai sobre ele e só atualizamos os campos + updated_at.
+  async upsert(sessionRowId, { mlAffiliateTag, cookieString, csrfToken }) {
     const [row] = await this.db
       .insert(mlCredentials)
-      .values({ userId, mlAffiliateTag, cookieString, csrfToken })
+      .values({ sessionId: sessionRowId, mlAffiliateTag, cookieString, csrfToken })
       .onConflictDoUpdate({
-        target: mlCredentials.userId,
+        target: mlCredentials.sessionId,
         set: {
           mlAffiliateTag,
           cookieString,

@@ -3,10 +3,12 @@ export default class MlCredentialController {
     this.mlCredentialService = mlCredentialService;
   }
 
+  // `:id` na rota é o nome da margem (sessions.sessionId).
   getCredentials = async (req, res) => {
     try {
       const credentials = await this.mlCredentialService.getCredentials(
-        req.user.id
+        req.user.id,
+        req.params.id
       );
       return res.json(credentials);
     } catch (error) {
@@ -20,6 +22,7 @@ export default class MlCredentialController {
     try {
       const credentials = await this.mlCredentialService.saveCredentials(
         req.user.id,
+        req.params.id,
         { mlAffiliateTag, cookieString, csrfToken }
       );
       return res.json(credentials);

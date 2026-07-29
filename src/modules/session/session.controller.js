@@ -4,7 +4,7 @@ export default class SessionController {
   }
 
   createSession = async (req, res) => {
-    const { sessionId, sourceGroupPrefix, targetGroupPrefix, folderId, convertLink } = req.body;
+    const { sessionId, sourceGroupPrefix, targetGroupPrefix, folderId } = req.body;
     const userId = req.user.id;
 
     if (!sessionId) {
@@ -24,8 +24,7 @@ export default class SessionController {
         sessionId,
         sourceGroupPrefix,
         targetGroupPrefix,
-        normalizedFolderId,
-        convertLink === true
+        normalizedFolderId
       );
       return res.json(session);
     } catch (error) {

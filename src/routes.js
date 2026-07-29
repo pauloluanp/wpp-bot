@@ -5,7 +5,6 @@ import { makeUserController } from "./modules/users/user.module.js";
 import { makeFolderController } from "./modules/folders/folder.module.js";
 import { makePlanModule } from "./modules/plans/plan.module.js";
 import { makeMlCredentialController } from "./modules/mlCredentials/mlCredential.module.js";
-import { makeMlConvertController } from "./modules/mlConvert/mlConvert.module.js";
 import { authMiddleware } from "./middlewares/auth.middleware.js";
 import { adminMiddleware } from "./middlewares/admin.middleware.js";
 
@@ -15,7 +14,6 @@ const userController = makeUserController();
 const folderController = makeFolderController();
 const { planController } = makePlanModule();
 const mlCredentialController = makeMlCredentialController();
-const mlConvertController = makeMlConvertController();
 
 // Criação/listagem de usuários é restrita a administradores.
 router.post("/users", authMiddleware, adminMiddleware, userController.createUser);
@@ -31,14 +29,6 @@ router.patch("/me", authMiddleware, userController.updateProfile);
 router.patch("/me/password", authMiddleware, userController.changePassword);
 // Obs.: a troca de plano NÃO é self-service (o pagamento vem antes). O usuário
 // é encaminhado ao WhatsApp e o plano é aplicado via script de admin (db:set-plan).
-
-// Credenciais do Mercado Livre do usuário logado (o service exige plano premium).
-router.get("/me/ml-credentials", authMiddleware, mlCredentialController.getCredentials);
-router.put("/me/ml-credentials", authMiddleware, mlCredentialController.saveCredentials);
-
-// Conversão de link do Mercado Livre com as credenciais do usuário logado.
-// Body: { "url": "..." } ou { "text": "promoção inteira com links" }.
-router.post("/me/ml-convert", authMiddleware, mlConvertController.convert);
 
 // Pastas (usadas pelo front para organizar as margens/sessões)
 router.get("/folders", authMiddleware, folderController.listFolders);
@@ -57,6 +47,11 @@ router.get("/sessions/:id/qrcode", authMiddleware, sessionController.getQRCode);
 router.post("/sessions/:id/config", authMiddleware, sessionController.updateSessionConfig);
 
 router.get("/sessions/:id/pending", authMiddleware, sessionController.getPendingMessages);
+
+// Credenciais do Mercado Livre por margem (o service exige plano premium e que a
+// margem pertença ao usuário). `:id` é o nome da margem (sessions.sessionId).
+router.get("/sessions/:id/ml-credentials", authMiddleware, mlCredentialController.getCredentials);
+router.put("/sessions/:id/ml-credentials", authMiddleware, mlCredentialController.saveCredentials);
 
 router.get("/telegram/groups", async (req, res) => {
   try {

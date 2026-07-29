@@ -50,12 +50,13 @@ export const sessions = pgTable("sessions", {
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`),
 });
 
-// Credenciais do Mercado Livre por usuário (1:1). Usadas para gerar os links de
-// afiliado. `cookie_string`/`csrf_token` são longos e expiram periodicamente.
+// Credenciais do Mercado Livre por margem/sessão (1:1). Usadas para gerar os
+// links de afiliado. `cookie_string`/`csrf_token` são longos e expiram
+// periodicamente. Ter credenciais é o que faz a margem "converter".
 export const mlCredentials = pgTable("ml_credentials", {
   id: serial("id").primaryKey(),
-  userId: integer("user_id")
-    .references(() => users.id)
+  sessionId: integer("session_id")
+    .references(() => sessions.id)
     .notNull()
     .unique(),
   mlAffiliateTag: varchar("ml_affiliate_tag", { length: 255 }),

@@ -3,6 +3,7 @@ import makeWASocket, {
   DisconnectReason,
   fetchLatestBaileysVersion,
   downloadMediaMessage,
+  generateWAMessageFromContent,
 } from "@whiskeysockets/baileys";
 import qrcode from "qrcode-terminal";
 import path from "path";
@@ -361,39 +362,42 @@ async function createTelegramPayload(sock, message, fallbackText, captionOverrid
 // Mercado Livre: conversão de links de afiliado
 // ---------------------------------------------------------------------------
 
-// O manager é chaveado por sessionId; o dono só existe no banco. Cacheamos para
-// não consultar a cada promoção.
-const sessionOwners = new Map(); // sessionId -> userId
+// O manager é chaveado pelo NOME da sessão; o id serial (chave das credenciais)
+// só existe no banco. Cacheamos o mapeamento nome -> id para não consultar toda
+// promoção.
+const sessionRowIds = new Map(); // sessionName -> sessions.id
 const credentialAlerts = new Map(); // sessionId -> timestamp do último aviso
 
 const CREDENTIAL_ALERT_COOLDOWN_MS = 6 * 60 * 60 * 1000;
 
-async function getSessionUserId(sessionId) {
-  if (sessionOwners.has(sessionId)) return sessionOwners.get(sessionId);
+async function getSessionRowId(sessionName) {
+  if (sessionRowIds.has(sessionName)) return sessionRowIds.get(sessionName);
 
   const [row] = await db
-    .select({ userId: dbSessions.userId })
+    .select({ id: dbSessions.id })
     .from(dbSessions)
-    .where(eq(dbSessions.sessionId, sessionId));
+    .where(eq(dbSessions.sessionId, sessionName));
 
-  const userId = row?.userId ?? null;
-  sessionOwners.set(sessionId, userId);
-  return userId;
+  const id = row?.id ?? null;
+  sessionRowIds.set(sessionName, id);
+  return id;
 }
 
-async function getOwnerMlCredentials(sessionId) {
-  const userId = await getSessionUserId(sessionId);
-  if (!userId) return null;
+// Credenciais do Mercado Livre DA MARGEM (não mais do usuário). São buscadas
+// frescas a cada chamada, então cadastrar credenciais passa a valer na hora.
+async function getSessionMlCredentials(sessionName) {
+  const sessionRowId = await getSessionRowId(sessionName);
+  if (!sessionRowId) return null;
 
   const [row] = await db
     .select()
     .from(mlCredentials)
-    .where(eq(mlCredentials.userId, userId));
+    .where(eq(mlCredentials.sessionId, sessionRowId));
 
-  // Sem tag ou sem cookie, o usuário simplesmente não usa o recurso.
+  // Sem tag ou sem cookie, a margem simplesmente não converte.
   if (!row?.mlAffiliateTag || !row?.cookieString) return null;
 
-  return { userId, credentials: row };
+  return { credentials: row };
 }
 
 // O JID do próprio bot vem como "5511999999999:12@s.whatsapp.net" — o sufixo de
@@ -456,6 +460,33 @@ async function buildWhatsAppPayload(sock, message, caption) {
     };
   }
 
+  // Promoções que chegam como texto COM link preview (a imagem grande + o card
+  // "meli.la" são o preview do link, não um imageMessage). O fallback de texto
+  // puro descartaria o preview. Preservamos TODOS os campos do preview original
+  // (inclusive o thumbnail de alta qualidade: thumbnailDirectPath + mediaKey +
+  // sha, que é o que faz o preview renderizar GRANDE, igual à mensagem original)
+  // e só trocamos o texto e a URL destacada pela versão de afiliado. contextInfo
+  // é removido para não arrastar citação/encaminhamento do grupo de origem.
+  // Sinalizado com __rawContent porque precisa ir como mensagem crua (relayMessage).
+  const preview = content.extendedTextMessage;
+  if (
+    preview &&
+    (preview.jpegThumbnail || preview.thumbnailDirectPath || preview.title)
+  ) {
+    const url = (caption.match(/https?:\/\/[^\s<>"')\]}]+/i) || [])[0];
+    const { contextInfo, ...previewFields } = preview;
+    return {
+      __rawContent: {
+        extendedTextMessage: {
+          ...previewFields,
+          text: caption,
+          matchedText: url || preview.matchedText,
+          canonicalUrl: url || preview.canonicalUrl,
+        },
+      },
+    };
+  }
+
   // Áudio e figurinha não têm texto para converter — não deveriam chegar aqui.
   return { text: caption };
 }
@@ -474,16 +505,17 @@ async function resolveMercadoLivreConversion(sessionId, message) {
 
   let owner;
   try {
-    owner = await getOwnerMlCredentials(sessionId);
+    owner = await getSessionMlCredentials(sessionId);
   } catch (error) {
     console.error(`[${sessionId}] ❌ Erro ao buscar credenciais ML: ${error.message}`);
     return { action: "forward" };
   }
 
-  // Quem não cadastrou credenciais continua recebendo as promoções como sempre.
+  // Margem sem credenciais cadastradas continua recebendo as promoções como sempre.
   if (!owner) return { action: "forward" };
 
-  const result = await convertMessageText(caption, owner.credentials, owner.userId);
+  // Cache de conversão por MARGEM (tags diferentes por margem não compartilham cache).
+  const result = await convertMessageText(caption, owner.credentials, sessionId);
 
   if (!result.hadMl) return { action: "forward" };
 
@@ -929,7 +961,18 @@ export async function startSession(sessionId) {
               console.warn(`[${sessionId}] ⚠️ Falha ao simular digitação: ${e.message}`);
             }
 
-            if (rebuiltPayload) {
+            if (rebuiltPayload?.__rawContent) {
+              // Promo com link preview: enviada como mensagem CRUA para preservar
+              // a imagem/preview (o sendMessage de texto puro não carrega o preview).
+              const waMsg = generateWAMessageFromContent(
+                target.id,
+                rebuiltPayload.__rawContent,
+                { userJid: getOwnJid(currentSock) || undefined },
+              );
+              await currentSock.relayMessage(target.id, waMsg.message, {
+                messageId: waMsg.key.id,
+              });
+            } else if (rebuiltPayload) {
               // O forward do Baileys copia a mensagem byte a byte e não permite
               // editar o texto — por isso a promo do ML é remontada.
               await currentSock.sendMessage(target.id, rebuiltPayload);
@@ -1249,7 +1292,7 @@ export function deleteSession(sessionId) {
   qrcodes.delete(sessionId);
   sessionConfigs.delete(sessionId);
   sessionSchedules.delete(sessionId);
-  sessionOwners.delete(sessionId);
+  sessionRowIds.delete(sessionId);
   credentialAlerts.delete(sessionId);
 
   // Limpa mensagens pendentes

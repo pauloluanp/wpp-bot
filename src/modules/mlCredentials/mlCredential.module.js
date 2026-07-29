@@ -4,15 +4,18 @@ import MlCredentialRepository from "./mlCredential.repository.js";
 import MlCredentialService from "./mlCredential.service.js";
 import UserRepository from "../users/user.repository.js";
 import PlanRepository from "../plans/plan.repository.js";
+import SessionRepository from "../session/session.repository.js";
 
 export function makeMlCredentialController() {
   const mlCredentialRepository = new MlCredentialRepository(db);
   const userRepository = new UserRepository(db);
   const planRepository = new PlanRepository(db);
+  const sessionRepository = new SessionRepository(db);
   const mlCredentialService = new MlCredentialService(
     mlCredentialRepository,
     userRepository,
-    planRepository
+    planRepository,
+    sessionRepository
   );
 
   return new MlCredentialController(mlCredentialService);

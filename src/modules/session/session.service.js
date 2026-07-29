@@ -1,44 +1,22 @@
 import { startSession, stopSession, getQRCode, updateSessionConfig, deleteSession, getPendingMessages } from '../../manager.js';
 
 export default class SessionService {
-    constructor(sessionRepository, mlCredentialService) {
+    constructor(sessionRepository) {
         this.sessionRepository = sessionRepository;
-        this.mlCredentialService = mlCredentialService;
     }
 
-    // Garante que a margem só pode converter link se o dono for premium e já tiver
-    // credenciais do Mercado Livre (tag + cookie). Sem isso, uma margem "convertendo"
-    // descartaria todas as mensagens. Lança 403 (não premium) ou 400 (sem credenciais).
-    async #assertCanConvert(userId) {
-        // getCredentials já lança 403 quando o usuário não é premium.
-        const cred = await this.mlCredentialService.getCredentials(userId);
-        if (!cred.mlAffiliateTag || !cred.cookieString) {
-            const error = new Error(
-                "Configure suas credenciais do Mercado Livre antes de ativar a conversão de link"
-            );
-            error.statusCode = 400;
-            throw error;
-        }
-    }
-
-    async createSession(userId, sessionId, sourceGroupPrefix, targetGroupPrefix, folderId = null, convertLink = false) {
-        if (convertLink) {
-            await this.#assertCanConvert(userId);
-        }
-
-        // Configura os prefixos e o modo de conversão ANTES de iniciar a sessão
-        updateSessionConfig(sessionId, {
-            ...(sourceGroupPrefix && targetGroupPrefix
-                ? { sourceGroupPrefix, targetGroupPrefix }
-                : {}),
-            convertLink
-        });
+    async createSession(userId, sessionId, sourceGroupPrefix, targetGroupPrefix, folderId = null) {
+        // Configura os prefixos ANTES de iniciar a sessão. A conversão do Mercado
+        // Livre não é escolhida aqui: passa a valer quando a margem ganha credenciais.
         if (sourceGroupPrefix && targetGroupPrefix) {
+            updateSessionConfig(sessionId, {
+                sourceGroupPrefix,
+                targetGroupPrefix
+            });
             console.log(`✅ Prefixos configurados para ${sessionId}:`);
             console.log(`   📤 Origem: "${sourceGroupPrefix}"`);
             console.log(`   📥 Destino: "${targetGroupPrefix}"`);
         }
-        console.log(`   🔗 Converte link do Mercado Livre: ${convertLink ? "sim" : "não"}`);
 
         await startSession(sessionId);
 
@@ -47,8 +25,7 @@ export default class SessionService {
             sessionId,
             sourceGroupPrefix,
             targetGroupPrefix,
-            folderId,
-            convertLink
+            folderId
         );
         return session;
     }
