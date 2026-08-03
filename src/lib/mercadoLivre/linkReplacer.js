@@ -7,6 +7,10 @@
 // entregar a venda sem a tag de afiliado.
 
 import { convertToAffiliate, isMlUrl, ML_ERROR } from "./mlAffiliate.service.js";
+import {
+  isAggregatorUrl,
+  resolveAggregatorToMl,
+} from "./aggregatorResolver.js";
 
 const URL_REGEX = /https?:\/\/[^\s<>"')\]}]+/gi;
 
@@ -54,15 +58,28 @@ export function extractMlUrls(text) {
   return [...new Set(found)];
 }
 
+// Links de agregadores de promoção (ex.: salvouofertas.com), cuja página aponta
+// para uma oferta do Mercado Livre.
+export function extractAggregatorUrls(text) {
+  if (!text) return [];
+
+  const found = (text.match(URL_REGEX) || [])
+    .map(trimTrailingPunctuation)
+    .filter(isAggregatorUrl);
+
+  return [...new Set(found)];
+}
+
 /**
  * Troca os links do Mercado Livre presentes no texto pelos links de afiliado.
  *
  * @returns {Promise<{ text: string, hadMl: boolean, failed: null | { type: string, url: string } }>}
  */
-export async function convertMessageText(text, credentials, userId) {
-  const urls = extractMlUrls(text);
+export async function convertMessageText(text, credentials, cacheScope) {
+  const mlUrls = extractMlUrls(text);
+  const aggregatorUrls = extractAggregatorUrls(text);
 
-  if (urls.length === 0) {
+  if (mlUrls.length === 0 && aggregatorUrls.length === 0) {
     return { text, hadMl: false, failed: null };
   }
 
@@ -70,27 +87,53 @@ export async function convertMessageText(text, credentials, userId) {
     return {
       text,
       hadMl: true,
-      failed: { type: ML_ERROR.MISSING_CREDENTIALS, url: urls[0] },
+      failed: {
+        type: ML_ERROR.MISSING_CREDENTIALS,
+        url: mlUrls[0] || aggregatorUrls[0],
+      },
     };
+  }
+
+  // Alvos a converter: { original, mlUrl }. URLs do ML entram diretas; links de
+  // agregador são resolvidos para a URL do ML da oferta (mantendo o `original`
+  // para substituir no texto pelo link de afiliado).
+  const targets = mlUrls.map((url) => ({ original: url, mlUrl: url }));
+
+  for (const aggregatorUrl of aggregatorUrls) {
+    try {
+      const mlUrl = await resolveAggregatorToMl(aggregatorUrl);
+      if (mlUrl) targets.push({ original: aggregatorUrl, mlUrl });
+    } catch (error) {
+      const type = error.mlError || ML_ERROR.TEMPORARY;
+      // Página sem link do ML = não é promo do Mercado Livre → ignora o link
+      // (não bloqueia). Falhas transitórias/host inválido bloqueiam o envio.
+      if (type === ML_ERROR.PRODUCT_NOT_FOUND) continue;
+      return { text, hadMl: true, failed: { type, url: aggregatorUrl } };
+    }
+  }
+
+  // Só havia links de agregador e nenhum resolveu para o ML → não é promo do ML.
+  if (targets.length === 0) {
+    return { text, hadMl: false, failed: null };
   }
 
   let converted = text;
 
-  for (const url of urls) {
-    const cached = getCached(userId, url);
+  for (const { original, mlUrl } of targets) {
+    const cached = getCached(cacheScope, original);
     if (cached) {
-      converted = converted.replaceAll(url, cached);
+      converted = converted.replaceAll(original, cached);
       continue;
     }
 
-    const result = await convertToAffiliate(url, credentials);
+    const result = await convertToAffiliate(mlUrl, credentials);
 
     if (!result.affiliate) {
-      return { text, hadMl: true, failed: { type: result.error.type, url } };
+      return { text, hadMl: true, failed: { type: result.error.type, url: original } };
     }
 
-    setCached(userId, url, result.affiliate);
-    converted = converted.replaceAll(url, result.affiliate);
+    setCached(cacheScope, original, result.affiliate);
+    converted = converted.replaceAll(original, result.affiliate);
   }
 
   return { text: converted, hadMl: true, failed: null };

@@ -10,7 +10,7 @@ const ALLOWED_HOSTS = ["mercadolivre.com.br", "mercadolivre.com", "meli.la"];
 const AFFILIATE_ENDPOINT =
   "https://www.mercadolivre.com.br/affiliate-program/api/v2/stripe/user/links";
 
-const USER_AGENT =
+export const USER_AGENT =
   process.env.ML_USER_AGENT ||
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 
@@ -76,7 +76,7 @@ function needsResolution(url) {
   );
 }
 
-async function fetchWithTimeout(url, options = {}) {
+export async function fetchWithTimeout(url, options = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   try {
@@ -120,7 +120,7 @@ async function followRedirects(startUrl) {
 // endpoint de afiliados responderia 400.
 const PRODUCT_PATH_REGEX = /\/p\/MLB\d+|\/MLB-?\d+/i;
 
-function isProductUrl(url) {
+export function isProductUrl(url) {
   return PRODUCT_PATH_REGEX.test(url.pathname);
 }
 
