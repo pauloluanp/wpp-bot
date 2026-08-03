@@ -46,6 +46,9 @@ router.get("/sessions/:id/qrcode", authMiddleware, sessionController.getQRCode);
 
 router.post("/sessions/:id/config", authMiddleware, sessionController.updateSessionConfig);
 
+// Link de grupo (convite) da margem — anexado/substituído no final das mensagens.
+router.put("/sessions/:id/group-invite", authMiddleware, sessionController.updateGroupInvite);
+
 router.get("/sessions/:id/pending", authMiddleware, sessionController.getPendingMessages);
 
 // Credenciais do Mercado Livre por margem (o service exige plano premium e que a

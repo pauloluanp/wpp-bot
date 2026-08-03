@@ -46,6 +46,10 @@ export const sessions = pgTable("sessions", {
   // Quando true, a margem só repassa promoções do Mercado Livre (com link de
   // afiliado). Quando false, repassa todas as mensagens como estão.
   convertLink: boolean("convert_link").notNull().default(false),
+  // Link de grupo do dono da margem (opcional). Quando definido, o bot garante
+  // esse convite no final de cada mensagem repassada, substituindo um convite
+  // que já venha na promo.
+  groupInviteLink: varchar("group_invite_link", { length: 500 }),
   folderId: integer("folder_id").references(() => folders.id),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`),
 });

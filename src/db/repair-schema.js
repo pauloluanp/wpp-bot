@@ -39,6 +39,10 @@ const steps = [
     query: sql`ALTER TABLE "sessions" ADD COLUMN IF NOT EXISTS "convert_link" boolean DEFAULT false NOT NULL`,
   },
   {
+    label: "Garantindo coluna sessions.group_invite_link",
+    query: sql`ALTER TABLE "sessions" ADD COLUMN IF NOT EXISTS "group_invite_link" varchar(500)`,
+  },
+  {
     label: "Garantindo coluna users.plan_id",
     query: sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "plan_id" integer`,
   },

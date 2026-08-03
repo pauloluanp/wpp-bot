@@ -6,13 +6,14 @@ export default class SessionRepository {
     this.db = db;
   }
 
-  async createSession(userId, sessionId, sourceGroupPrefix, targetGroupPrefix, folderId = null) {
+  async createSession(userId, sessionId, sourceGroupPrefix, targetGroupPrefix, folderId = null, groupInviteLink = null) {
     return this.db.insert(sessions).values({
       userId,
       sessionId,
       sourceGroup: sourceGroupPrefix,
       targetGroup: targetGroupPrefix,
       folderId,
+      groupInviteLink,
       status: false
     });
   }
@@ -23,6 +24,15 @@ export default class SessionRepository {
     return this.db
       .update(sessions)
       .set({ convertLink })
+      .where(and(eq(sessions.sessionId, sessionId), eq(sessions.userId, userId)));
+  }
+
+  // Define o link de grupo (convite) da margem — anexado/substituído no final das
+  // mensagens repassadas.
+  async setGroupInviteLink(sessionId, userId, groupInviteLink) {
+    return this.db
+      .update(sessions)
+      .set({ groupInviteLink })
       .where(and(eq(sessions.sessionId, sessionId), eq(sessions.userId, userId)));
   }
 

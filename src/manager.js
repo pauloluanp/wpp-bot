@@ -250,6 +250,102 @@ function getMessageCaption(message) {
   );
 }
 
+// ---------------------------------------------------------------------------
+// Convite de grupo da margem
+// ---------------------------------------------------------------------------
+
+// Só mensagens com texto/legenda podem receber o convite (áudio/figurinha não).
+function messageSupportsCaption(message) {
+  const content = message.message || {};
+  return !!(
+    content.conversation ||
+    content.extendedTextMessage ||
+    content.imageMessage ||
+    content.videoMessage ||
+    content.documentMessage
+  );
+}
+
+// Hosts de convite de grupo conhecidos (WhatsApp/Telegram).
+const INVITE_HOSTS_REGEX = /(?:chat\.whatsapp\.com|t\.me|telegram\.me)/i;
+// Linha que convida/leva para um grupo (marcador). Pega também domínios
+// personalizados (ex.: sosfitnes.com/convite-para-o-grupo/), que não têm host
+// conhecido, quando vêm precedidos por essa chamada.
+const GROUP_MARKER_REGEX =
+  /(?:convide|convites?|entre|entrar|participe|acesse|junte-?se|receba)[^\n]*grupo/i;
+// Linha que "parece" uma URL/domínio (com ou sem http).
+const URLISH_LINE_REGEX =
+  /^\s*(?:https?:\/\/\S+|(?:www\.)?[a-z0-9-]+(?:\.[a-z0-9-]+)+(?:\/\S*)?)\s*$/i;
+
+// Remove um convite de grupo já presente na mensagem: linha-marcador de grupo
+// (+ a URL na linha seguinte, se houver) e linhas com URL de host conhecido.
+function removeExistingGroupInvite(text) {
+  const lines = text.split("\n");
+  const keep = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+
+    if (GROUP_MARKER_REGEX.test(line)) {
+      // Se a próxima linha for a URL do convite, descarta as duas.
+      if (i + 1 < lines.length && URLISH_LINE_REGEX.test(lines[i + 1])) {
+        i++;
+      }
+      continue;
+    }
+
+    if (INVITE_HOSTS_REGEX.test(line)) continue;
+
+    keep.push(line);
+  }
+
+  return keep.join("\n");
+}
+
+// Garante o convite do dono no final da mensagem, substituindo um convite que já
+// venha na promo. Formato fixo: "Convide amigos para o grupo:\n<link>".
+function applyGroupInvite(text, inviteLink) {
+  const base = removeExistingGroupInvite(text || "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trimEnd();
+
+  const block = `Convide amigos para o grupo:\n${inviteLink}`;
+  return base ? `${base}\n\n${block}` : block;
+}
+
+// ---------------------------------------------------------------------------
+// Limpeza de referrals do criador da promo (ex.: "Salve um amigo")
+// ---------------------------------------------------------------------------
+
+// Chamada de "indique/salve um amigo" (referral do agregador).
+const SAVE_FRIEND_MARKER = /salve\s+(?:um|seu)\s+amigo/i;
+// Subdomínio de referral do salvouofertas (ex.: whatsapp.salvouofertas.com). Não
+// casa com o domínio nu (salvouofertas.com/p/...), que é o link do produto.
+const REFERRAL_HOST_REGEX = /[a-z0-9-]+\.salvouofertas\.com/i;
+
+// Remove os referrals do criador da promo (não é o convite de grupo): a linha
+// "Salve um amigo" (+ a URL seguinte) e linhas com URL de host de referral.
+// Sempre aplicada — o produto (salvouofertas.com/p/...) é preservado.
+function cleanSourceReferrals(text) {
+  const lines = (text || "").split("\n");
+  const keep = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+
+    if (SAVE_FRIEND_MARKER.test(line)) {
+      if (i + 1 < lines.length && URLISH_LINE_REGEX.test(lines[i + 1])) i++;
+      continue;
+    }
+
+    if (REFERRAL_HOST_REGEX.test(line)) continue;
+
+    keep.push(line);
+  }
+
+  return keep.join("\n").replace(/\n{3,}/g, "\n\n").trimEnd();
+}
+
 async function downloadWhatsAppMedia(sock, message) {
   return downloadMediaMessage(
     message,
@@ -595,6 +691,7 @@ export async function startSession(sessionId) {
           targetGroupPrefix: dbSession.targetGroup,
           telegramTargetGroups: [],
           convertLink: dbSession.convertLink ?? false,
+          groupInviteLink: dbSession.groupInviteLink ?? null,
           delayMs: DEFAULT_DELAY_MS,
         };
         console.log(`✅ [${sessionId}] Configuração carregada do banco.`);
@@ -627,6 +724,7 @@ export async function startSession(sessionId) {
       targetGroupPrefix: null,
       telegramTargetGroups: [],
       convertLink: false,
+      groupInviteLink: null,
       delayMs: DEFAULT_DELAY_MS,
     });
   }
@@ -919,7 +1017,7 @@ export async function startSession(sessionId) {
         //   nem Telegram) para não divulgar a oferta sem a tag; se a mensagem não for
         //   do Mercado Livre, ela é ignorada.
         let outgoingText = text;
-        let rebuiltPayload = null;
+        let needsRebuild = false;
 
         if (currentConfig.convertLink === true) {
           const conversion = await resolveMercadoLivreConversion(sessionId, frozenMsg);
@@ -939,15 +1037,42 @@ export async function startSession(sessionId) {
             return;
           }
 
-          // action === "rebuild": links convertidos → remonta a mensagem.
+          // action === "rebuild": links convertidos → texto muda, remonta depois.
           outgoingText = conversion.caption;
-          // A mídia é baixada uma única vez e reusada em todos os destinos.
-          rebuiltPayload = await buildWhatsAppPayload(
-            currentSock,
-            deepCloneMessage(frozenMsg),
-            conversion.caption,
-          );
+          needsRebuild = true;
         }
+
+        // Referrals do criador da promo (ex.: "Salve um amigo") são removidos
+        // SEMPRE, em qualquer margem, quando a mensagem tem texto/legenda. Só
+        // remonta quando de fato há algo para remover.
+        if (messageSupportsCaption(frozenMsg)) {
+          const cleaned = cleanSourceReferrals(outgoingText);
+          if (cleaned !== outgoingText) {
+            outgoingText = cleaned;
+            needsRebuild = true;
+          }
+        }
+
+        // Convite de grupo da margem: garante o convite do dono no final (substitui
+        // um convite que já venha na promo). Só em mensagens com texto/legenda —
+        // áudio/figurinha seguem por forward nativo, sem convite.
+        if (currentConfig.groupInviteLink && messageSupportsCaption(frozenMsg)) {
+          const withInvite = applyGroupInvite(outgoingText, currentConfig.groupInviteLink);
+          if (withInvite !== outgoingText) {
+            outgoingText = withInvite;
+            needsRebuild = true;
+          }
+        }
+
+        // Quando o texto muda (conversão e/ou convite), a mensagem é remontada.
+        // A mídia é baixada uma única vez e reusada em todos os destinos.
+        const rebuiltPayload = needsRebuild
+          ? await buildWhatsAppPayload(
+              currentSock,
+              deepCloneMessage(frozenMsg),
+              outgoingText,
+            )
+          : null;
 
         try {
           for (const target of currentConfig.targetGroups || []) {
@@ -1141,6 +1266,7 @@ export function updateSessionConfig(sessionId, config) {
       targetGroupPrefix: null,
       telegramTargetGroups: [],
       convertLink: false,
+      groupInviteLink: null,
       delayMs: DEFAULT_DELAY_MS,
       ...config, // Aplica as configurações fornecidas
     });

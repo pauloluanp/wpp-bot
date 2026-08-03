@@ -5,14 +5,19 @@ export default class SessionService {
         this.sessionRepository = sessionRepository;
     }
 
-    async createSession(userId, sessionId, sourceGroupPrefix, targetGroupPrefix, folderId = null) {
-        // Configura os prefixos ANTES de iniciar a sessão. A conversão do Mercado
-        // Livre não é escolhida aqui: passa a valer quando a margem ganha credenciais.
+    async createSession(userId, sessionId, sourceGroupPrefix, targetGroupPrefix, folderId = null, groupInviteLink = null) {
+        const normalizedInvite = (groupInviteLink || '').trim() || null;
+
+        // Configura os prefixos e o link de grupo ANTES de iniciar a sessão. A
+        // conversão do Mercado Livre não é escolhida aqui: passa a valer quando a
+        // margem ganha credenciais.
+        updateSessionConfig(sessionId, {
+            ...(sourceGroupPrefix && targetGroupPrefix
+                ? { sourceGroupPrefix, targetGroupPrefix }
+                : {}),
+            groupInviteLink: normalizedInvite,
+        });
         if (sourceGroupPrefix && targetGroupPrefix) {
-            updateSessionConfig(sessionId, {
-                sourceGroupPrefix,
-                targetGroupPrefix
-            });
             console.log(`✅ Prefixos configurados para ${sessionId}:`);
             console.log(`   📤 Origem: "${sourceGroupPrefix}"`);
             console.log(`   📥 Destino: "${targetGroupPrefix}"`);
@@ -25,9 +30,24 @@ export default class SessionService {
             sessionId,
             sourceGroupPrefix,
             targetGroupPrefix,
-            folderId
+            folderId,
+            normalizedInvite
         );
         return session;
+    }
+
+    async updateGroupInvite(sessionId, userId, groupInviteLink) {
+        const existsSession = await this.sessionRepository.getSessionById(sessionId, userId);
+        if (!existsSession || existsSession.length === 0) {
+            throw new Error('Sessão não encontrada');
+        }
+
+        const normalized = (groupInviteLink || '').trim() || null;
+        await this.sessionRepository.setGroupInviteLink(sessionId, userId, normalized);
+        // Atualiza a config em memória para valer na sessão em execução sem reiniciar.
+        updateSessionConfig(sessionId, { groupInviteLink: normalized });
+
+        return { ok: true, groupInviteLink: normalized };
     }
 
     async startSession(sessionId, userId) {

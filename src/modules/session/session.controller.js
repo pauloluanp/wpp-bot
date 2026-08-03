@@ -4,7 +4,7 @@ export default class SessionController {
   }
 
   createSession = async (req, res) => {
-    const { sessionId, sourceGroupPrefix, targetGroupPrefix, folderId } = req.body;
+    const { sessionId, sourceGroupPrefix, targetGroupPrefix, folderId, groupInviteLink } = req.body;
     const userId = req.user.id;
 
     if (!sessionId) {
@@ -24,7 +24,8 @@ export default class SessionController {
         sessionId,
         sourceGroupPrefix,
         targetGroupPrefix,
-        normalizedFolderId
+        normalizedFolderId,
+        groupInviteLink
       );
       return res.json(session);
     } catch (error) {
@@ -127,6 +128,23 @@ export default class SessionController {
       return res.json(session);
     } catch (error) {
       return res.status(500).json({ error: error.message });
+    }
+  };
+
+  updateGroupInvite = async (req, res) => {
+    const { id: sessionId } = req.params;
+    const userId = req.user.id;
+    const { groupInviteLink } = req.body;
+
+    try {
+      const result = await this.sessionService.updateGroupInvite(
+        sessionId,
+        userId,
+        groupInviteLink
+      );
+      return res.json(result);
+    } catch (error) {
+      return res.status(error.statusCode || 500).json({ error: error.message });
     }
   };
 
