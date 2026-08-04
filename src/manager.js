@@ -496,6 +496,12 @@ async function getSessionMlCredentials(sessionName) {
   return { credentials: row };
 }
 
+// Indica se a margem já tem credenciais do Mercado Livre cadastradas.
+// Margens nessa condição enviam na hora (ignoram a regra de tempo).
+async function sessionHasMlCredentials(sessionName) {
+  return (await getSessionMlCredentials(sessionName)) !== null;
+}
+
 // O JID do próprio bot vem como "5511999999999:12@s.whatsapp.net" — o sufixo de
 // device (":12") precisa sair, senão o envio falha.
 function getOwnJid(sock) {
@@ -952,50 +958,67 @@ export async function startSession(sessionId) {
       const frozenMsg = deepCloneMessage(msg);
 
       const now = Date.now();
-      const nextQuarterStart = Math.ceil(now / WINDOW_MS) * WINDOW_MS;
 
-      let schedule = sessionSchedules.get(sessionId) || {
-        lastTime: 0,
-        windowStart: nextQuarterStart,
-        count: 0,
-      };
+      // Margens que já têm credenciais do Mercado Livre cadastradas enviam NA
+      // HORA, sem passar pela janela de throttling (e sem consumir slot dela).
+      // As demais seguem a regra de tempo (gap aleatório dentro da janela).
+      const sendNow = await sessionHasMlCredentials(sessionId);
 
-      // Se passou o tempo da janela atual ou é uma nova sessão, reseta para a próxima janela disponível
-      if (now > schedule.windowStart + WINDOW_MS || schedule.lastTime === 0) {
-        schedule.windowStart = Math.max(nextQuarterStart, schedule.windowStart);
-        schedule.count = 0;
-        schedule.lastTime = schedule.windowStart;
+      let nextTime;
+      let delayMs;
+
+      if (sendNow) {
+        nextTime = now;
+        delayMs = 0;
+        console.log(
+          `[${sessionId}] ⚡ Margem com credenciais ML: envio imediato (ID: ${msg.key.id})`,
+        );
+      } else {
+        const nextQuarterStart = Math.ceil(now / WINDOW_MS) * WINDOW_MS;
+
+        let schedule = sessionSchedules.get(sessionId) || {
+          lastTime: 0,
+          windowStart: nextQuarterStart,
+          count: 0,
+        };
+
+        // Se passou o tempo da janela atual ou é uma nova sessão, reseta para a próxima janela disponível
+        if (now > schedule.windowStart + WINDOW_MS || schedule.lastTime === 0) {
+          schedule.windowStart = Math.max(nextQuarterStart, schedule.windowStart);
+          schedule.count = 0;
+          schedule.lastTime = schedule.windowStart;
+        }
+
+        // Se atingiu o limite da janela, pula para a próxima
+        if (schedule.count >= MSG_PER_WINDOW) {
+          schedule.windowStart += WINDOW_MS;
+          schedule.count = 0;
+          schedule.lastTime = schedule.windowStart;
+        }
+
+        // Calcula o próximo envio com um gap aleatório dentro da janela
+        const minGap = 2 * 60 * 1000; // Mínimo 2 min entre msgs dentro da mesma janela
+        const maxGap = 4 * 60 * 1000; // Máximo 4 min
+        const gap = Math.floor(Math.random() * (maxGap - minGap + 1)) + minGap;
+
+        nextTime = schedule.lastTime + gap;
+
+        // Garante que não ultrapasse o fim da janela atual de 15 min (deixa margem de 1 min)
+        const windowEnd = schedule.windowStart + WINDOW_MS - 60000;
+        if (nextTime > windowEnd) {
+          nextTime = windowEnd;
+        }
+
+        schedule.lastTime = nextTime;
+        schedule.count++;
+        sessionSchedules.set(sessionId, schedule);
+
+        delayMs = nextTime - now;
+
+        console.log(
+          `[${sessionId}] ⏳ Aguardando ${(delayMs / 60000).toFixed(2)} minutos antes de encaminhar... (ID: ${msg.key.id})`,
+        );
       }
-
-      // Se atingiu o limite da janela, pula para a próxima
-      if (schedule.count >= MSG_PER_WINDOW) {
-        schedule.windowStart += WINDOW_MS;
-        schedule.count = 0;
-        schedule.lastTime = schedule.windowStart;
-      }
-
-      // Calcula o próximo envio com um gap aleatório dentro da janela
-      const minGap = 2 * 60 * 1000; // Mínimo 2 min entre msgs dentro da mesma janela
-      const maxGap = 4 * 60 * 1000; // Máximo 4 min
-      const gap = Math.floor(Math.random() * (maxGap - minGap + 1)) + minGap;
-
-      let nextTime = schedule.lastTime + gap;
-
-      // Garante que não ultrapasse o fim da janela atual de 15 min (deixa margem de 1 min)
-      const windowEnd = schedule.windowStart + WINDOW_MS - 60000;
-      if (nextTime > windowEnd) {
-        nextTime = windowEnd;
-      }
-
-      schedule.lastTime = nextTime;
-      schedule.count++;
-      sessionSchedules.set(sessionId, schedule);
-
-      const delayMs = nextTime - now;
-
-      console.log(
-        `[${sessionId}] ⏳ Aguardando ${(delayMs / 60000).toFixed(2)} minutos antes de encaminhar... (ID: ${msg.key.id})`,
-      );
 
       const sendRoutine = async () => {
         const pendingKey = getMessageKey(sessionId, msg.key.id);
