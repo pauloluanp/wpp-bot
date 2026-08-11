@@ -1,4 +1,4 @@
-import { startSession, stopSession, getQRCode, updateSessionConfig, deleteSession, getPendingMessages } from '../../manager.js';
+import { startSession, stopSession, getQRCode, updateSessionConfig, deleteSession, getPendingMessages, sendPromoMessage } from '../../manager.js';
 
 export default class SessionService {
     constructor(sessionRepository) {
@@ -134,5 +134,21 @@ export default class SessionService {
         }
 
         return getPendingMessages(sessionId);
+    }
+
+    /**
+     * Dispara uma promoção montada na tela "Criar promoção" nos grupos de
+     * destino da margem. A checagem de posse é obrigatória: sem ela qualquer
+     * usuário logado enviaria mensagem pela margem de outro.
+     */
+    async sendPromo(sessionId, userId, { imageBase64, caption }) {
+        const existsSession = await this.sessionRepository.getSessionById(sessionId, userId);
+        if (!existsSession || existsSession.length === 0) {
+            const error = new Error('Sessão não encontrada');
+            error.statusCode = 404;
+            throw error;
+        }
+
+        return sendPromoMessage(sessionId, { imageBase64, caption });
     }
 }

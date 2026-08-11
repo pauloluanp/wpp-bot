@@ -148,6 +148,30 @@ export default class SessionController {
     }
   };
 
+  sendPromo = async (req, res) => {
+    const { id: sessionId } = req.params;
+    const userId = req.user.id;
+    const { imageBase64, caption } = req.body;
+
+    if (!imageBase64) {
+      return res.status(400).json({ error: 'imageBase64 obrigatório' });
+    }
+
+    if (!caption || !caption.trim()) {
+      return res.status(400).json({ error: 'caption obrigatória' });
+    }
+
+    try {
+      const result = await this.sessionService.sendPromo(sessionId, userId, {
+        imageBase64,
+        caption: caption.trim(),
+      });
+      return res.json(result);
+    } catch (error) {
+      return res.status(error.statusCode || 500).json({ error: error.message });
+    }
+  };
+
   getPendingMessages = async (req, res) => {
     const { id: sessionId } = req.params;
     const userId = req.user.id;

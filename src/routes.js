@@ -51,6 +51,11 @@ router.put("/sessions/:id/group-invite", authMiddleware, sessionController.updat
 
 router.get("/sessions/:id/pending", authMiddleware, sessionController.getPendingMessages);
 
+// Disparo manual de promoção (tela "Criar promoção"): recebe a imagem em base64
+// e a legenda já pronta, e envia nos grupos de destino da margem. `:id` é o nome
+// da margem (sessions.sessionId).
+router.post("/sessions/:id/send", authMiddleware, sessionController.sendPromo);
+
 // Credenciais do Mercado Livre por margem (o service exige plano premium e que a
 // margem pertença ao usuário). `:id` é o nome da margem (sessions.sessionId).
 router.get("/sessions/:id/ml-credentials", authMiddleware, mlCredentialController.getCredentials);

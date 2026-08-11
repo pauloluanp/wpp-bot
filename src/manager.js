@@ -4,6 +4,7 @@ import makeWASocket, {
   fetchLatestBaileysVersion,
   downloadMediaMessage,
   generateWAMessageFromContent,
+  prepareWAMessageMedia,
 } from "@whiskeysockets/baileys";
 import qrcode from "qrcode-terminal";
 import path from "path";
@@ -1467,4 +1468,152 @@ export function getPendingMessages(sessionId) {
     }
   }
   return pending;
+}
+
+// ---------------------------------------------------------------------------
+// Disparo manual de promoção (tela "Criar promoção")
+// ---------------------------------------------------------------------------
+
+function erroDeEnvio(mensagem, statusCode) {
+  const erro = new Error(mensagem);
+  erro.statusCode = statusCode;
+  return erro;
+}
+
+// Converte a imagem vinda do front (data URL ou base64 puro) em Buffer.
+function imagemBase64ParaBuffer(imageBase64) {
+  const conteudo = String(imageBase64 || "").replace(
+    /^data:image\/[a-z0-9.+-]+;base64,/i,
+    "",
+  );
+  const buffer = Buffer.from(conteudo, "base64");
+
+  if (!buffer.length) {
+    throw erroDeEnvio("Imagem inválida.", 400);
+  }
+
+  return buffer;
+}
+
+// Título do card de preview. Não dá para omitir nem mandar string vazia: sem
+// título com conteúdo o WhatsApp não desenha o card e a promo sai como texto
+// puro (a imagem vai junto, mas só aparece no thumbnail da citação) — os dois
+// casos foram testados em grupo.
+//
+// Como o formato desejado é só o banner + o domínio, sem bloco de texto no
+// card, o título é um espaço de largura zero: satisfaz o "não vazio" sem
+// desenhar nada. A descrição fica de fora pelo mesmo motivo.
+const TITULO_INVISIVEL = "​";
+
+/**
+ * Monta o `linkPreview` da promoção: banner no topo, o domínio logo abaixo e o
+ * texto completo na sequência.
+ *
+ * `prepareWAMessageMedia` com `mediaTypeOverride: "thumbnail-link"` sobe a
+ * imagem para o servidor do WhatsApp e devolve o thumbnail de alta qualidade
+ * (directPath + mediaKey + sha) além do `jpegThumbnail` inline reduzido, sem
+ * que a gente precise redimensionar nada aqui. É esse thumbnail de alta
+ * qualidade que faz o preview renderizar grande em vez de virar uma miniatura
+ * ao lado do texto — o mesmo conjunto de campos que `buildWhatsAppPayload`
+ * preserva ao repassar uma promo, então o repasse mantém o formato.
+ */
+async function montarLinkPreview(sock, buffer, url) {
+  const { imageMessage } = await prepareWAMessageMedia(
+    { image: buffer },
+    { upload: sock.waUploadToServer, mediaTypeOverride: "thumbnail-link" },
+  );
+
+  return {
+    "canonical-url": url,
+    "matched-text": url,
+    title: TITULO_INVISIVEL,
+    jpegThumbnail: imageMessage?.jpegThumbnail
+      ? Buffer.from(imageMessage.jpegThumbnail)
+      : undefined,
+    highQualityThumbnail: imageMessage || undefined,
+  };
+}
+
+/**
+ * Publica uma promoção montada pelo usuário no **grupo de envio** (origem) da
+ * margem. Não envia direto para os grupos de destino de propósito: ao cair no
+ * grupo de origem, a promo entra no fluxo normal do bot (`messages.upsert`,
+ * logo abaixo do `sock.sendMessage` porque `emitOwnEvents` é true por padrão) e
+ * é repassada com todo o tratamento de sempre — conversão de link do Mercado
+ * Livre, convite de grupo, agendamento/limite de envio e espelho no Telegram.
+ *
+ * A imagem vai como **preview do link** do produto, não como `imageMessage`.
+ */
+export async function sendPromoMessage(sessionId, { imageBase64, caption }) {
+  // O preview se ancora numa URL que exista no texto — é o link do produto.
+  const url = (caption.match(/https?:\/\/[^\s<>"')\]}]+/i) || [])[0];
+  if (!url) {
+    throw erroDeEnvio(
+      "A mensagem precisa conter um link (http:// ou https://) para a imagem virar preview.",
+      400,
+    );
+  }
+
+  const buffer = imagemBase64ParaBuffer(imageBase64);
+
+  const sock = sessions.get(sessionId);
+  if (!sock || sessionStatus.get(sessionId) !== "CONNECTED") {
+    throw erroDeEnvio(
+      "A margem não está conectada. Inicie a margem e leia o QR Code antes de enviar.",
+      409,
+    );
+  }
+
+  // O grupo é resolvido por prefixo quando a sessão conecta; se a config em
+  // memória ainda não tem a origem (ex.: grupo criado depois), tenta de novo.
+  let config = sessionConfigs.get(sessionId);
+  if (!config?.sourceGroup) {
+    await resolveGroupsByPrefix(sock, sessionId);
+    config = sessionConfigs.get(sessionId);
+  }
+
+  if (!config?.sourceGroup) {
+    throw erroDeEnvio(
+      `Nenhum grupo de envio encontrado para o prefixo "${config?.sourceGroupPrefix || ""}".`,
+      409,
+    );
+  }
+
+  const destino = {
+    id: config.sourceGroup,
+    name: config.sourceGroupName || config.sourceGroupPrefix || "grupo de envio",
+    canal: "whatsapp",
+  };
+
+  try {
+    const linkPreview = await montarLinkPreview(sock, buffer, url);
+
+    await simulateTyping(sock, destino.id, 1500 + Math.random() * 1500);
+    // Via `sendMessage` (e não `relayMessage`) de propósito: só ele emite o
+    // `messages.upsert` local, que é o que faz o fluxo normal do bot enxergar a
+    // promo e repassá-la para os grupos de destino.
+    await sock.sendMessage(destino.id, { text: caption, linkPreview });
+
+    console.log("\n" + "=".repeat(60));
+    console.log(`✅ [${sessionId}] PROMOÇÃO PUBLICADA NO GRUPO DE ENVIO`);
+    console.log("=".repeat(60));
+    console.log(`📤 Grupo: ${destino.name}`);
+    console.log(`🆔 ID do Grupo: ${destino.id}`);
+    console.log(`🔗 Preview ancorado em: ${url}`);
+    console.log("ℹ️  O repasse para os destinos segue o fluxo normal do bot.");
+    console.log("=".repeat(60) + "\n");
+
+    return { sent: [destino], failed: [] };
+  } catch (err) {
+    const mensagem = err.message || String(err);
+    console.error(
+      `❌ [${sessionId}] Falha ao publicar promoção em ${destino.name}: ${mensagem}`,
+    );
+
+    if (mensagem.includes("Closed") || err.output?.statusCode === 428) {
+      sessionStatus.set(sessionId, "DISCONNECTED");
+    }
+
+    return { sent: [], failed: [{ name: destino.name, error: mensagem }] };
+  }
 }

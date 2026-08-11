@@ -10,7 +10,9 @@ import {
 const app = express();
 
 app.use(cors());
-app.use(express.json());
+// Limite acima do default (100 kb) porque o disparo manual de promoção envia a
+// imagem em base64 no corpo do POST (/sessions/:id/send).
+app.use(express.json({ limit: "12mb" }));
 app.use(routes);
 
 const PORT = 3001;
