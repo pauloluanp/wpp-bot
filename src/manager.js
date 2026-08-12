@@ -3,6 +3,7 @@ import makeWASocket, {
   DisconnectReason,
   fetchLatestBaileysVersion,
   downloadMediaMessage,
+  extractImageThumb,
   generateWAMessageFromContent,
   prepareWAMessageMedia,
 } from "@whiskeysockets/baileys";
@@ -15,7 +16,11 @@ import { db } from "./db/index.js";
 import { sessions as dbSessions, mlCredentials } from "./db/schema.js";
 import { eq } from "drizzle-orm";
 import { convertMessageText } from "./lib/mercadoLivre/linkReplacer.js";
-import { ML_ERROR } from "./lib/mercadoLivre/mlAffiliate.service.js";
+import {
+  ML_ERROR,
+  USER_AGENT,
+  fetchWithTimeout,
+} from "./lib/mercadoLivre/mlAffiliate.service.js";
 
 const sessions = new Map();
 const qrcodes = new Map();
@@ -267,6 +272,17 @@ function messageSupportsCaption(message) {
   );
 }
 
+// A promo já mostra alguma imagem? Conta tanto mídia de verdade quanto o
+// thumbnail de um link preview. É o que decide se vale buscar a imagem do
+// produto na página do agregador — o visual que veio da origem tem prioridade.
+function messageHasImage(message) {
+  const content = message.message || {};
+  if (content.imageMessage) return true;
+
+  const preview = content.extendedTextMessage;
+  return !!(preview?.jpegThumbnail || preview?.thumbnailDirectPath);
+}
+
 // Hosts de convite de grupo conhecidos (WhatsApp/Telegram).
 const INVITE_HOSTS_REGEX = /(?:chat\.whatsapp\.com|t\.me|telegram\.me)/i;
 // Linha que convida/leva para um grupo (marcador). Pega também domínios
@@ -357,6 +373,55 @@ async function downloadWhatsAppMedia(sock, message) {
       reuploadRequest: sock.updateMediaMessage,
     },
   );
+}
+
+// Teto do download da imagem do produto. Thumbnail de link é pequeno; o limite
+// existe só para uma URL hostil não conseguir estourar a memória do processo.
+const MAX_IMAGEM_BYTES = 5 * 1024 * 1024;
+
+/**
+ * Baixa a imagem do produto (descoberta na página do agregador) para virar
+ * thumbnail do preview. O host já foi validado contra a allowlist no
+ * `parseImageUrl`; aqui só sobram as guardas de conteúdo e tamanho.
+ *
+ * Devolve `null` em qualquer falha — nunca lança. A imagem é enfeite: uma promo
+ * que já converteu o link não pode deixar de ser enviada por causa disso.
+ */
+async function baixarImagemDoProduto(url) {
+  try {
+    const response = await fetchWithTimeout(url, {
+      headers: { "user-agent": USER_AGENT, accept: "image/*" },
+    });
+
+    if (!response.ok) {
+      console.warn(`⚠️ Imagem do produto respondeu ${response.status}: ${url}`);
+      return null;
+    }
+
+    const contentType = response.headers.get("content-type") || "";
+    if (!contentType.startsWith("image/")) {
+      console.warn(`⚠️ Imagem do produto não é imagem (${contentType}): ${url}`);
+      return null;
+    }
+
+    const declarado = Number(response.headers.get("content-length"));
+    if (declarado > MAX_IMAGEM_BYTES) {
+      console.warn(`⚠️ Imagem do produto grande demais (${declarado} bytes): ${url}`);
+      return null;
+    }
+
+    const buffer = Buffer.from(await response.arrayBuffer());
+    // O content-length é opcional e pode mentir: confere o tamanho real também.
+    if (!buffer.length || buffer.length > MAX_IMAGEM_BYTES) {
+      console.warn(`⚠️ Imagem do produto com tamanho inválido (${buffer.length} bytes)`);
+      return null;
+    }
+
+    return buffer;
+  } catch (error) {
+    console.warn(`⚠️ Falha ao baixar a imagem do produto: ${error.message}`);
+    return null;
+  }
 }
 
 async function sendTelegramMessage(bot, chatId, media) {
@@ -540,16 +605,127 @@ async function notifyCredentialsExpired(sock, sessionId, errorType) {
   }
 }
 
+// Título do card de preview. Não dá para omitir nem mandar string vazia: sem
+// título com conteúdo o WhatsApp não desenha o card e a promo sai como texto
+// puro (a imagem vai junto, mas só aparece no thumbnail da citação) — os dois
+// casos foram testados em grupo.
+//
+// Como o formato desejado é só o banner + o domínio, sem bloco de texto no
+// card, o título é um espaço de largura zero: satisfaz o "não vazio" sem
+// desenhar nada. A descrição fica de fora pelo mesmo motivo.
+const TITULO_INVISIVEL = "​";
+
+/**
+ * Sobe uma imagem como thumbnail de link e devolve o `imageMessage` do Baileys.
+ *
+ * `mediaTypeOverride: "thumbnail-link"` faz o upload devolver o thumbnail de
+ * alta qualidade (directPath + mediaKey + sha) além do `jpegThumbnail` inline
+ * reduzido, sem que a gente precise redimensionar nada aqui. É esse thumbnail
+ * de alta qualidade que faz o preview renderizar grande em vez de virar uma
+ * miniatura ao lado do texto.
+ */
+async function subirThumbnailDeLink(sock, buffer) {
+  const { imageMessage } = await prepareWAMessageMedia(
+    { image: buffer },
+    {
+      upload: sock.waUploadToServer,
+      mediaTypeOverride: "thumbnail-link",
+      // O Baileys gera o jpegThumbnail dentro de um try/catch que só reporta via
+      // `logger?.warn`. Sem logger a falha é ENGOLIDA: o upload conclui, mas o
+      // preview sai sem o thumbnail inline e o card renderiza vazio. Passar o
+      // logger é o que torna esse modo de falha visível.
+      logger: P({ level: "warn" }),
+    },
+  );
+
+  return imageMessage;
+}
+
+// Os mesmos dados do thumbnail, mas no formato cru do `extendedTextMessage` —
+// é o mapeamento que o `generateWAMessageContent` do Baileys faz internamente
+// a partir do `highQualityThumbnail`.
+async function camposDePreviewDeImagem(sock, buffer) {
+  const imageMessage = await subirThumbnailDeLink(sock, buffer);
+  if (!imageMessage) return null;
+
+  let jpegThumbnail = imageMessage.jpegThumbnail
+    ? Buffer.from(imageMessage.jpegThumbnail)
+    : undefined;
+  let largura = imageMessage.width;
+  let altura = imageMessage.height;
+
+  // O card só renderiza a imagem com o jpegThumbnail INLINE; o thumbnail de alta
+  // qualidade sozinho não basta — sem ele o preview sai como uma faixa só com o
+  // domínio. Como a geração dentro do Baileys é best-effort (e falha em
+  // silêncio), refazemos aqui em vez de mandar um card vazio.
+  if (!jpegThumbnail) {
+    try {
+      const { buffer: thumb, original } = await extractImageThumb(buffer);
+      jpegThumbnail = thumb;
+      largura = largura || original?.width;
+      altura = altura || original?.height;
+      console.log("ℹ️  jpegThumbnail gerado localmente (o Baileys não devolveu).");
+    } catch (error) {
+      console.warn(
+        `⚠️ Não foi possível gerar o jpegThumbnail (${error.message}) — o card vai sair sem imagem.`,
+      );
+    }
+  }
+
+  return {
+    jpegThumbnail,
+    thumbnailDirectPath: imageMessage.directPath,
+    thumbnailSha256: imageMessage.fileSha256,
+    thumbnailEncSha256: imageMessage.fileEncSha256,
+    mediaKey: imageMessage.mediaKey,
+    mediaKeyTimestamp: imageMessage.mediaKeyTimestamp,
+    thumbnailWidth: largura,
+    thumbnailHeight: altura,
+  };
+}
+
+// Monta o `__rawContent` de uma promo como texto + card de preview, usando o
+// buffer recebido como thumbnail. Devolve `null` quando não dá para montar
+// (sem URL para ancorar ou falha no upload), para o chamador cair no formato
+// original em vez de deixar a promo sem imagem.
+async function payloadComPreview(sock, buffer, caption, url, previewOriginal) {
+  if (!buffer || !url) return null;
+
+  try {
+    const campos = await camposDePreviewDeImagem(sock, buffer);
+    if (!campos) return null;
+
+    return {
+      __rawContent: {
+        extendedTextMessage: {
+          text: caption,
+          matchedText: url,
+          canonicalUrl: url,
+          // Sem título com conteúdo o WhatsApp não desenha o card.
+          title: previewOriginal?.title || TITULO_INVISIVEL,
+          previewType: 0,
+          ...campos,
+        },
+      },
+    };
+  } catch (error) {
+    console.warn(`⚠️ Falha ao montar o preview da promo: ${error.message}`);
+    return null;
+  }
+}
+
 // Espelha o createTelegramPayload, mas para reenviar no WhatsApp. Só é usado
 // quando o texto muda (promo do ML), porque o forward nativo não permite editar
 // o conteúdo da mensagem.
-async function buildWhatsAppPayload(sock, message, caption) {
+//
+// `imagemDoProduto` (Buffer ou null) é a imagem do produto tirada da página do
+// agregador. Ela é o ÚLTIMO recurso: a imagem que já veio na mensagem tem
+// prioridade, e a do site só entra quando a promo chega sem imagem nenhuma.
+async function buildWhatsAppPayload(sock, message, caption, imagemDoProduto = null) {
   const content = message.message || {};
+  const url = (caption.match(/https?:\/\/[^\s<>"')\]}]+/i) || [])[0];
 
-  if (content.imageMessage) {
-    return { image: await downloadWhatsAppMedia(sock, message), caption };
-  }
-
+  // Vídeo e documento seguem no formato original — não faz sentido virarem card.
   if (content.videoMessage) {
     return { video: await downloadWhatsAppMedia(sock, message), caption };
   }
@@ -563,20 +739,55 @@ async function buildWhatsAppPayload(sock, message, caption) {
     };
   }
 
-  // Promoções que chegam como texto COM link preview (a imagem grande + o card
-  // "meli.la" são o preview do link, não um imageMessage). O fallback de texto
-  // puro descartaria o preview. Preservamos TODOS os campos do preview original
-  // (inclusive o thumbnail de alta qualidade: thumbnailDirectPath + mediaKey +
-  // sha, que é o que faz o preview renderizar GRANDE, igual à mensagem original)
-  // e só trocamos o texto e a URL destacada pela versão de afiliado. contextInfo
-  // é removido para não arrastar citação/encaminhamento do grupo de origem.
-  // Sinalizado com __rawContent porque precisa ir como mensagem crua (relayMessage).
+  // 1º) FOTO com legenda: vira card usando a PRÓPRIA foto da mensagem. Numa foto
+  // anexada o toque na imagem não abre nada; no card ele abre o link de afiliado.
+  // Sem link para ancorar (ou se o upload falhar), volta a ser foto com legenda.
+  if (content.imageMessage) {
+    const foto = await downloadWhatsAppMedia(sock, message);
+    return (
+      (await payloadComPreview(sock, foto, caption, url)) || {
+        image: foto,
+        caption,
+      }
+    );
+  }
+
+  // 2º) Promoções que chegam como texto COM link preview (a imagem grande + o
+  // card "meli.la" são o preview do link, não um imageMessage). O fallback de
+  // texto puro descartaria o preview. Preservamos TODOS os campos do preview
+  // original (inclusive o thumbnail de alta qualidade: thumbnailDirectPath +
+  // mediaKey + sha, que é o que faz o preview renderizar GRANDE) e só trocamos o
+  // texto e a URL destacada pela versão de afiliado. contextInfo é removido para
+  // não arrastar citação/encaminhamento do grupo de origem. Sinalizado com
+  // __rawContent porque precisa ir como mensagem crua (relayMessage).
   const preview = content.extendedTextMessage;
-  if (
-    preview &&
-    (preview.jpegThumbnail || preview.thumbnailDirectPath || preview.title)
-  ) {
-    const url = (caption.match(/https?:\/\/[^\s<>"')\]}]+/i) || [])[0];
+  if (preview && messageHasImage(message)) {
+    const { contextInfo, ...previewFields } = preview;
+    return {
+      __rawContent: {
+        extendedTextMessage: {
+          ...previewFields,
+          text: caption,
+          matchedText: url || preview.matchedText,
+          canonicalUrl: url || preview.canonicalUrl,
+        },
+      },
+    };
+  }
+
+  // 3º) Nada de imagem na mensagem (texto puro, ou preview só com título): aí
+  // sim entra a imagem tirada da página do agregador.
+  const comImagemDoProduto = await payloadComPreview(
+    sock,
+    imagemDoProduto,
+    caption,
+    url,
+    preview,
+  );
+  if (comImagemDoProduto) return comImagemDoProduto;
+
+  // 4º) Sem imagem alguma, mas com card de texto na origem: mantém o card.
+  if (preview?.title) {
     const { contextInfo, ...previewFields } = preview;
     return {
       __rawContent: {
@@ -597,9 +808,11 @@ async function buildWhatsAppPayload(sock, message, caption) {
 /**
  * Decide o que fazer com uma promoção antes de repassá-la.
  *
- * @returns {Promise<{ action: "forward" } | { action: "rebuild", caption: string } | { action: "block", errorType: string }>}
+ * @returns {Promise<{ action: "forward" } | { action: "rebuild", caption: string, imageUrl: string | null } | { action: "block", errorType: string }>}
  *   - forward: não é do Mercado Livre (ou o dono não usa o recurso) → fluxo normal, intacto.
  *   - rebuild: links convertidos → a mensagem precisa ser remontada com o novo texto.
+ *              `imageUrl` é a imagem do produto achada na página do agregador
+ *              (só links de agregador têm; `null` no resto).
  *   - block:   conversão falhou → não enviar e avisar o dono.
  */
 async function resolveMercadoLivreConversion(sessionId, message) {
@@ -633,7 +846,7 @@ async function resolveMercadoLivreConversion(sessionId, message) {
   credentialAlerts.delete(sessionId);
 
   console.log(`[${sessionId}] 🔗 Link(s) do Mercado Livre convertido(s) para afiliado.`);
-  return { action: "rebuild", caption: result.text };
+  return { action: "rebuild", caption: result.text, imageUrl: result.imageUrl };
 }
 
 export async function resetAllSessionStatus() {
@@ -1042,6 +1255,7 @@ export async function startSession(sessionId) {
         //   do Mercado Livre, ela é ignorada.
         let outgoingText = text;
         let needsRebuild = false;
+        let imagemDoProdutoUrl = null;
 
         if (currentConfig.convertLink === true) {
           const conversion = await resolveMercadoLivreConversion(sessionId, frozenMsg);
@@ -1064,6 +1278,7 @@ export async function startSession(sessionId) {
           // action === "rebuild": links convertidos → texto muda, remonta depois.
           outgoingText = conversion.caption;
           needsRebuild = true;
+          imagemDoProdutoUrl = conversion.imageUrl;
         }
 
         // Referrals do criador da promo (ex.: "Salve um amigo") são removidos
@@ -1088,6 +1303,21 @@ export async function startSession(sessionId) {
           }
         }
 
+        // Imagem do produto tirada da página do agregador. Só é baixada quando a
+        // promo chega SEM imagem — a que veio na mensagem tem prioridade, então
+        // no caso comum nem há requisição. Uma vez só, fora do loop de destinos.
+        const imagemDoProduto =
+          imagemDoProdutoUrl && !messageHasImage(frozenMsg)
+            ? await baixarImagemDoProduto(imagemDoProdutoUrl)
+            : null;
+
+        if (imagemDoProduto) {
+          console.log(
+            `[${sessionId}] 🖼️  Promo sem imagem: usando a do site (${imagemDoProdutoUrl}) no preview.`,
+          );
+          needsRebuild = true;
+        }
+
         // Quando o texto muda (conversão e/ou convite), a mensagem é remontada.
         // A mídia é baixada uma única vez e reusada em todos os destinos.
         const rebuiltPayload = needsRebuild
@@ -1095,6 +1325,7 @@ export async function startSession(sessionId) {
               currentSock,
               deepCloneMessage(frozenMsg),
               outgoingText,
+              imagemDoProduto,
             )
           : null;
 
@@ -1495,33 +1726,14 @@ function imagemBase64ParaBuffer(imageBase64) {
   return buffer;
 }
 
-// Título do card de preview. Não dá para omitir nem mandar string vazia: sem
-// título com conteúdo o WhatsApp não desenha o card e a promo sai como texto
-// puro (a imagem vai junto, mas só aparece no thumbnail da citação) — os dois
-// casos foram testados em grupo.
-//
-// Como o formato desejado é só o banner + o domínio, sem bloco de texto no
-// card, o título é um espaço de largura zero: satisfaz o "não vazio" sem
-// desenhar nada. A descrição fica de fora pelo mesmo motivo.
-const TITULO_INVISIVEL = "​";
-
 /**
- * Monta o `linkPreview` da promoção: banner no topo, o domínio logo abaixo e o
- * texto completo na sequência.
- *
- * `prepareWAMessageMedia` com `mediaTypeOverride: "thumbnail-link"` sobe a
- * imagem para o servidor do WhatsApp e devolve o thumbnail de alta qualidade
- * (directPath + mediaKey + sha) além do `jpegThumbnail` inline reduzido, sem
- * que a gente precise redimensionar nada aqui. É esse thumbnail de alta
- * qualidade que faz o preview renderizar grande em vez de virar uma miniatura
- * ao lado do texto — o mesmo conjunto de campos que `buildWhatsAppPayload`
- * preserva ao repassar uma promo, então o repasse mantém o formato.
+ * Monta o `linkPreview` da promoção para o `sendMessage`: banner no topo, o
+ * domínio logo abaixo e o texto completo na sequência. É o formato `WAUrlInfo`
+ * que o Baileys espera — o repasse usa `camposDePreviewDeImagem`, que monta os
+ * mesmos dados no formato cru do `extendedTextMessage`.
  */
 async function montarLinkPreview(sock, buffer, url) {
-  const { imageMessage } = await prepareWAMessageMedia(
-    { image: buffer },
-    { upload: sock.waUploadToServer, mediaTypeOverride: "thumbnail-link" },
-  );
+  const imageMessage = await subirThumbnailDeLink(sock, buffer);
 
   return {
     "canonical-url": url,

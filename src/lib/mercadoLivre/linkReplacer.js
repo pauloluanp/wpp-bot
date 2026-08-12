@@ -24,6 +24,8 @@ function cacheKey(userId, url) {
   return `${userId}:${url}`;
 }
 
+// Guarda o par { affiliate, imageUrl }: a imagem sai da mesma página do
+// agregador que o link, então revisitar o cache também evita rebuscá-la.
 function getCached(userId, url) {
   const entry = cache.get(cacheKey(userId, url));
   if (!entry) return null;
@@ -33,12 +35,13 @@ function getCached(userId, url) {
     return null;
   }
 
-  return entry.affiliate;
+  return { affiliate: entry.affiliate, imageUrl: entry.imageUrl };
 }
 
-function setCached(userId, url, affiliate) {
+function setCached(userId, url, affiliate, imageUrl) {
   cache.set(cacheKey(userId, url), {
     affiliate,
+    imageUrl: imageUrl || null,
     expiresAt: Date.now() + CACHE_TTL_MS,
   });
 }
@@ -73,20 +76,25 @@ export function extractAggregatorUrls(text) {
 /**
  * Troca os links do Mercado Livre presentes no texto pelos links de afiliado.
  *
- * @returns {Promise<{ text: string, hadMl: boolean, failed: null | { type: string, url: string } }>}
+ * `imageUrl` é a imagem do produto descoberta na página do agregador (a primeira
+ * encontrada, quando há mais de um link). Vem `null` para promoções que só têm
+ * link direto do ML — nesse caso nenhuma página é baixada.
+ *
+ * @returns {Promise<{ text: string, hadMl: boolean, imageUrl: string | null, failed: null | { type: string, url: string } }>}
  */
 export async function convertMessageText(text, credentials, cacheScope) {
   const mlUrls = extractMlUrls(text);
   const aggregatorUrls = extractAggregatorUrls(text);
 
   if (mlUrls.length === 0 && aggregatorUrls.length === 0) {
-    return { text, hadMl: false, failed: null };
+    return { text, hadMl: false, imageUrl: null, failed: null };
   }
 
   if (!credentials?.mlAffiliateTag || !credentials?.cookieString) {
     return {
       text,
       hadMl: true,
+      imageUrl: null,
       failed: {
         type: ML_ERROR.MISSING_CREDENTIALS,
         url: mlUrls[0] || aggregatorUrls[0],
@@ -94,47 +102,68 @@ export async function convertMessageText(text, credentials, cacheScope) {
     };
   }
 
-  // Alvos a converter: { original, mlUrl }. URLs do ML entram diretas; links de
-  // agregador são resolvidos para a URL do ML da oferta (mantendo o `original`
-  // para substituir no texto pelo link de afiliado).
-  const targets = mlUrls.map((url) => ({ original: url, mlUrl: url }));
+  // Alvos a converter: { original, mlUrl, imageUrl }. URLs do ML entram diretas
+  // (sem imagem, porque não há página baixada); links de agregador são resolvidos
+  // para a URL do ML da oferta (mantendo o `original` para substituir no texto
+  // pelo link de afiliado) e trazem junto a imagem do produto.
+  const targets = mlUrls.map((url) => ({
+    original: url,
+    mlUrl: url,
+    imageUrl: null,
+  }));
 
   for (const aggregatorUrl of aggregatorUrls) {
     try {
-      const mlUrl = await resolveAggregatorToMl(aggregatorUrl);
-      if (mlUrl) targets.push({ original: aggregatorUrl, mlUrl });
+      const resolved = await resolveAggregatorToMl(aggregatorUrl);
+      if (resolved) {
+        targets.push({
+          original: aggregatorUrl,
+          mlUrl: resolved.mlUrl,
+          imageUrl: resolved.imageUrl,
+        });
+      }
     } catch (error) {
       const type = error.mlError || ML_ERROR.TEMPORARY;
       // Página sem link do ML = não é promo do Mercado Livre → ignora o link
       // (não bloqueia). Falhas transitórias/host inválido bloqueiam o envio.
       if (type === ML_ERROR.PRODUCT_NOT_FOUND) continue;
-      return { text, hadMl: true, failed: { type, url: aggregatorUrl } };
+      return { text, hadMl: true, imageUrl: null, failed: { type, url: aggregatorUrl } };
     }
   }
 
   // Só havia links de agregador e nenhum resolveu para o ML → não é promo do ML.
   if (targets.length === 0) {
-    return { text, hadMl: false, failed: null };
+    return { text, hadMl: false, imageUrl: null, failed: null };
   }
 
   let converted = text;
+  let imageUrl = null;
 
-  for (const { original, mlUrl } of targets) {
+  for (const target of targets) {
+    const { original, mlUrl } = target;
     const cached = getCached(cacheScope, original);
+
     if (cached) {
-      converted = converted.replaceAll(original, cached);
+      converted = converted.replaceAll(original, cached.affiliate);
+      imageUrl = imageUrl || cached.imageUrl;
       continue;
     }
 
     const result = await convertToAffiliate(mlUrl, credentials);
 
     if (!result.affiliate) {
-      return { text, hadMl: true, failed: { type: result.error.type, url: original } };
+      return {
+        text,
+        hadMl: true,
+        imageUrl: null,
+        failed: { type: result.error.type, url: original },
+      };
     }
 
-    setCached(cacheScope, original, result.affiliate);
+    setCached(cacheScope, original, result.affiliate, target.imageUrl);
     converted = converted.replaceAll(original, result.affiliate);
+    imageUrl = imageUrl || target.imageUrl;
   }
 
-  return { text: converted, hadMl: true, failed: null };
+  return { text: converted, hadMl: true, imageUrl, failed: null };
 }

@@ -115,10 +115,11 @@ async function followRedirects(startUrl) {
   });
 }
 
-// Produtos do ML sempre têm o id na URL: /p/MLB123456 (catálogo) ou /MLB-123456 (anúncio).
+// Produtos do ML sempre têm o id na URL: /p/MLB123456 (catálogo), /up/MLBU123456
+// (anúncio unificado, formato usado pelos kits) ou /MLB-123456 (anúncio).
 // Sem esse filtro, o primeiro href da página seria algo como /acessibilidade/feedback, e o
 // endpoint de afiliados responderia 400.
-const PRODUCT_PATH_REGEX = /\/p\/MLB\d+|\/MLB-?\d+/i;
+const PRODUCT_PATH_REGEX = /\/p\/MLB\d+|\/up\/MLBU?\d+|\/MLB-?\d+/i;
 
 export function isProductUrl(url) {
   return PRODUCT_PATH_REGEX.test(url.pathname);
