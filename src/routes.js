@@ -33,6 +33,9 @@ router.patch("/me/password", authMiddleware, userController.changePassword);
 // Pastas (usadas pelo front para organizar as margens/sessões)
 router.get("/folders", authMiddleware, folderController.listFolders);
 router.post("/folders", authMiddleware, folderController.createFolder);
+router.patch("/folders/:id", authMiddleware, folderController.updateFolder);
+// Excluir a pasta NÃO exclui as margens dela: elas voltam para a pasta "Geral".
+router.delete("/folders/:id", authMiddleware, folderController.deleteFolder);
 
 router.post("/sessions", authMiddleware, sessionController.createSession);
 router.get("/sessions", authMiddleware, sessionController.listSessions);
