@@ -83,16 +83,34 @@ export default class SessionService {
         return this.sessionRepository.listSessions(userId);
     }
 
-    async deleteSession(sessionId, userId) {
-        const existsSession = await this.sessionRepository.getSessionById(sessionId, userId);
-        if (!existsSession || existsSession.length === 0) {
+    async deleteSession(identificador, userId) {
+        // Compat de deploy: o id numérico é o caminho novo, o nome (slug) é o
+        // fallback enquanto o front antigo estiver no ar em produção.
+        // TODO: remover o fallback por nome quando o front só mandar id.
+        // Efeito colateral aceito: uma margem chamada "12" seria lida como id.
+        const rowId = Number(identificador);
+        const porId =
+            Number.isInteger(rowId) && String(rowId) === String(identificador);
+
+        const rows = porId
+            ? await this.sessionRepository.getSessionByRowId(rowId, userId)
+            : await this.sessionRepository.getSessionById(identificador, userId);
+
+        const session = rows?.[0];
+        if (!session) {
             throw new Error('Sessão não encontrada');
         }
-        if (existsSession[0].status) {
-            await stopSession(sessionId);
+
+        // O manager é chaveado pelo NOME (Maps em memória e a pasta
+        // sessions/<nome> em disco), por isso a linha é resolvida antes.
+        if (session.status) {
+            await stopSession(session.sessionId);
         }
-        await deleteSession(sessionId);
-        await this.sessionRepository.deleteSession(sessionId, userId);
+        await deleteSession(session.sessionId);
+
+        // Com a linha em mãos, o DELETE vai sempre pela PK — inequívoco mesmo
+        // que existam duas margens com o mesmo nome (session_id não é UNIQUE).
+        await this.sessionRepository.deleteSessionByRowId(session.id, userId);
         return { ok: true };
     }
 

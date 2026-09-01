@@ -69,10 +69,27 @@ export default class SessionRepository {
       .where(and(eq(sessions.sessionId, sessionId), eq(sessions.userId, userId)));
   }
 
+  // Atenção: busca pelo NOME da margem (sessions.session_id, varchar), não pela
+  // chave primária. Para buscar pela PK use getSessionByRowId.
   async getSessionById(sessionId, userId) {
     return this.db
       .select()
       .from(sessions)
       .where(and(eq(sessions.sessionId, sessionId), eq(sessions.userId, userId)));
+  }
+
+  // Busca pela chave primária (sessions.id). Diferente do nome, a PK é única e
+  // não precisa de escape na URL.
+  async getSessionByRowId(id, userId) {
+    return this.db
+      .select()
+      .from(sessions)
+      .where(and(eq(sessions.id, id), eq(sessions.userId, userId)));
+  }
+
+  async deleteSessionByRowId(id, userId) {
+    return this.db
+      .delete(sessions)
+      .where(and(eq(sessions.id, id), eq(sessions.userId, userId)));
   }
 }

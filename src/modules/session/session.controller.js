@@ -76,14 +76,20 @@ export default class SessionController {
     }
   };
 
+  // `:id` aceita o id numérico da margem (caminho atual) ou o nome/slug
+  // (fallback de compatibilidade com o front antigo).
   deleteSession = async (req, res) => {
-    const { id: sessionId } = req.params;
+    const { id: identificador } = req.params;
     const userId = req.user.id;
     try {
-      const session = await this.sessionService.deleteSession(sessionId, userId);
+      const session = await this.sessionService.deleteSession(
+        identificador,
+        userId
+      );
       return res.json(session);
     } catch (error) {
-      return res.status(500).json({ error: error.message });
+      const status = error.message === "Sessão não encontrada" ? 404 : 500;
+      return res.status(status).json({ error: error.message });
     }
   };
 
