@@ -197,7 +197,7 @@ function classifyStatus(status) {
 function classifyGraphqlError(message) {
   const m = (message || "").toLowerCase();
   if (/rate.?limit|too many requests/.test(m)) return SHOPEE_ERROR.RATE_LIMITED;
-  if (/invalid.*signature|unauthorized|invalid.*credential|invalid.*app|auth/.test(m)) {
+  if (/invalid signature|invalid credential|invalid app ?id|unauthorized|permission denied|app id not found/.test(m)) {
     return SHOPEE_ERROR.MISSING_CREDENTIALS;
   }
   return SHOPEE_ERROR.TEMPORARY;

@@ -21,7 +21,10 @@ import {
   USER_AGENT,
   fetchWithTimeout,
 } from "./lib/mercadoLivre/mlAffiliate.service.js";
-import { convertShopeeMessageText } from "./lib/shopee/shopeeLinkReplacer.js";
+import {
+  convertShopeeMessageText,
+  extractShopeeUrls,
+} from "./lib/shopee/shopeeLinkReplacer.js";
 import { SHOPEE_ERROR } from "./lib/shopee/shopeeAffiliate.service.js";
 
 const sessions = new Map();
@@ -888,6 +891,10 @@ async function resolveShopeeConversion(sessionId, text) {
       console.warn(
         `[${sessionId}] 🛑 Shopee: NÃO enviado — produto fora do programa de afiliados (${result.failed.url})`,
       );
+    } else if (result.failed.type === SHOPEE_ERROR.MISSING_CREDENTIALS) {
+      console.warn(
+        `[${sessionId}] 🛑 Shopee: NÃO enviado — credenciais globais inválidas. Confira SHOPEE_APP_ID/SHOPEE_SECRET no .env (${result.failed.url})`,
+      );
     } else {
       console.warn(
         `[${sessionId}] 🛑 Shopee: conversão falhou (${result.failed.type}) para ${result.failed.url}`,
@@ -1224,10 +1231,15 @@ export async function startSession(sessionId) {
 
       const now = Date.now();
 
-      // Margens que já têm credenciais do Mercado Livre cadastradas enviam NA
-      // HORA, sem passar pela janela de throttling (e sem consumir slot dela).
-      // As demais seguem a regra de tempo (gap aleatório dentro da janela).
-      const sendNow = await sessionHasMlCredentials(sessionId);
+      // Enviam NA HORA (sem passar pela janela de throttling): margens com
+      // credenciais do Mercado Livre cadastradas, e mensagens que trazem link da
+      // Shopee para converter (conversão global ligada). As demais seguem a
+      // regra de tempo (gap aleatório dentro da janela).
+      const temShopeeParaConverter =
+        getShopeeCredentials(sessionId) !== null &&
+        extractShopeeUrls(text).length > 0;
+      const sendNow =
+        (await sessionHasMlCredentials(sessionId)) || temShopeeParaConverter;
 
       let nextTime;
       let delayMs;
@@ -1236,7 +1248,7 @@ export async function startSession(sessionId) {
         nextTime = now;
         delayMs = 0;
         console.log(
-          `[${sessionId}] ⚡ Margem com credenciais ML: envio imediato (ID: ${msg.key.id})`,
+          `[${sessionId}] ⚡ Envio imediato (credenciais ML ou link da Shopee para converter) (ID: ${msg.key.id})`,
         );
       } else {
         const nextQuarterStart = Math.ceil(now / WINDOW_MS) * WINDOW_MS;
@@ -1298,58 +1310,70 @@ export async function startSession(sessionId) {
           return;
         }
 
-        // Modo da margem (config.convertLink):
-        // - false → repassa TODAS as mensagens como estão (sem conversão).
-        // - true  → repassa SÓ promoções que dá para converter (Mercado Livre OU
-        //   Shopee), com o link trocado pelo de afiliado do dono. Se a conversão
-        //   falhar, nada é enviado (nem WhatsApp nem Telegram) para não divulgar a
-        //   oferta sem a tag; se a mensagem não tiver link convertível, é ignorada.
+        // Conversão de links:
+        // - Mercado Livre: só quando a margem está em MODO CONVERSÃO
+        //   (config.convertLink === true, derivado de ter credenciais ML).
+        // - Shopee: sempre que a conversão global estiver ligada
+        //   (SHOPEE_APP_ID/SHOPEE_SECRET no .env), INDEPENDENTE de convertLink.
+        //
+        // Em modo conversão, a mensagem sem nenhum link convertível é ignorada.
+        // Fora do modo conversão, os links da Shopee são trocados e o resto da
+        // mensagem segue normal. Se uma conversão falhar (ex.: produto fora do
+        // programa), nada é enviado — para não divulgar oferta sem a tag.
         let outgoingText = text;
         let needsRebuild = false;
         let imagemDoProdutoUrl = null;
 
-        if (currentConfig.convertLink === true) {
-          // 1) Mercado Livre.
-          const ml = await resolveMercadoLivreConversion(sessionId, frozenMsg);
+        const convertMode = currentConfig.convertLink === true;
+        const shopeeEnabled = getShopeeCredentials(sessionId) !== null;
 
-          if (ml.action === "block") {
-            console.log(
-              `[${sessionId}] 🛑 Envio cancelado: promoção do Mercado Livre não convertida (ID: ${msg.key.id})`,
-            );
-            await notifyCredentialsExpired(currentSock, sessionId, ml.errorType);
-            return;
+        if (convertMode || shopeeEnabled) {
+          let workingText = getMessageCaption(frozenMsg);
+          let hadMl = false;
+          let hadShopee = false;
+
+          if (convertMode) {
+            const ml = await resolveMercadoLivreConversion(sessionId, frozenMsg);
+            if (ml.action === "block") {
+              console.log(
+                `[${sessionId}] 🛑 Envio cancelado: promoção do Mercado Livre não convertida (ID: ${msg.key.id})`,
+              );
+              await notifyCredentialsExpired(currentSock, sessionId, ml.errorType);
+              return;
+            }
+            hadMl = ml.action === "rebuild";
+            if (hadMl) {
+              workingText = ml.caption;
+              imagemDoProdutoUrl = ml.imageUrl;
+            }
           }
 
-          const hadMl = ml.action === "rebuild";
-          let workingText = hadMl ? ml.caption : getMessageCaption(frozenMsg);
-          if (hadMl) imagemDoProdutoUrl = ml.imageUrl;
-
-          // 2) Shopee, sobre o texto já com o link do ML trocado. No-op quando
-          //    SHOPEE_APP_ID/SHOPEE_SECRET não estão no .env.
-          const shp = await resolveShopeeConversion(sessionId, workingText);
-
-          if (shp.action === "block") {
-            // resolveShopeeConversion já registrou o motivo no log (inclui o
-            // caso "produto fora do programa de afiliados").
-            console.log(
-              `[${sessionId}] 🛑 Envio cancelado: promoção da Shopee não convertida (ID: ${msg.key.id})`,
-            );
-            return;
+          if (shopeeEnabled) {
+            const shp = await resolveShopeeConversion(sessionId, workingText);
+            if (shp.action === "block") {
+              // resolveShopeeConversion já registrou o motivo no log (inclui o
+              // caso "produto fora do programa de afiliados").
+              console.log(
+                `[${sessionId}] 🛑 Envio cancelado: promoção da Shopee não convertida (ID: ${msg.key.id})`,
+              );
+              return;
+            }
+            hadShopee = shp.action === "rebuild";
+            if (hadShopee) workingText = shp.caption;
           }
 
-          const hadShopee = shp.action === "rebuild";
-          if (hadShopee) workingText = shp.caption;
-
-          // 3) Modo conversão: só repassa promo que deu para converter.
-          if (!hadMl && !hadShopee) {
+          // Modo conversão: só repassa promo que deu para converter.
+          if (convertMode && !hadMl && !hadShopee) {
             console.log(
               `[${sessionId}] ⏭️ Mensagem sem link convertível (Mercado Livre/Shopee) ignorada (margem de conversão) (ID: ${msg.key.id})`,
             );
             return;
           }
 
-          outgoingText = workingText;
-          needsRebuild = true;
+          if (hadMl || hadShopee) {
+            outgoingText = workingText;
+            needsRebuild = true;
+          }
         }
 
         // Referrals do criador da promo (ex.: "Salve um amigo") são removidos

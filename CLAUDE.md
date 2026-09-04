@@ -54,9 +54,13 @@ Chaves esperadas (ver `.env.example`): `DB_HOST/USER/PASSWORD/NAME/PORT/SSL` (Ne
 `BCRYPT_SALT_ROUNDS`.
 
 - `SHOPEE_APP_ID` / `SHOPEE_SECRET`: credenciais **globais** da Open API de afiliados da
-  Shopee. Sem elas, a conversão de links da Shopee fica desligada (no-op). Migração para
-  credenciais por margem (como `ml_credentials` do Mercado Livre) está pendente. Opcionais
-  com default: `SHOPEE_REQUEST_TIMEOUT`, `SHOPEE_CACHE_TTL_MS`, `SHOPEE_USER_AGENT`,
+  Shopee. Sem elas, a conversão de links da Shopee fica desligada (no-op). **Com elas, os
+  links da Shopee são convertidos em TODAS as margens, independente do `convert_link`**
+  (que continua sendo o gate só do Mercado Livre): margem fora do modo conversão troca o
+  link da Shopee e repassa o resto da mensagem normalmente; produto Shopee fora do programa
+  de afiliados não é enviado (fica só no log). Migração para credenciais por margem (como
+  `ml_credentials` do Mercado Livre) está pendente. Opcionais com default:
+  `SHOPEE_REQUEST_TIMEOUT`, `SHOPEE_CACHE_TTL_MS`, `SHOPEE_USER_AGENT`,
   `SHOPEE_SHORTLINK_HOSTS`, `SHOPEE_GRAPHQL_ENDPOINT`.
 - Conversão de link do Mercado Livre (`src/lib/mercadoLivre/`) usa `ml_credentials` por
   margem; aceita tuners opcionais `ML_CACHE_TTL_MS`, `ML_USER_AGENT`, `ML_REQUEST_TIMEOUT`,
