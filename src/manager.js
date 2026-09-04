@@ -21,6 +21,8 @@ import {
   USER_AGENT,
   fetchWithTimeout,
 } from "./lib/mercadoLivre/mlAffiliate.service.js";
+import { convertShopeeMessageText } from "./lib/shopee/shopeeLinkReplacer.js";
+import { SHOPEE_ERROR } from "./lib/shopee/shopeeAffiliate.service.js";
 
 const sessions = new Map();
 const qrcodes = new Map();
@@ -568,6 +570,17 @@ async function sessionHasMlCredentials(sessionName) {
   return (await getSessionMlCredentials(sessionName)) !== null;
 }
 
+// Credenciais da Shopee. Hoje GLOBAIS (variáveis de ambiente). Enquanto
+// SHOPEE_APP_ID/SHOPEE_SECRET não estiverem no .env, a conversão da Shopee é
+// no-op total. Quando migrar para tabela por margem, trocar só o corpo desta
+// função por uma consulta espelhando getSessionMlCredentials.
+function getShopeeCredentials(/* sessionName */) {
+  const appId = process.env.SHOPEE_APP_ID?.trim();
+  const appSecret = process.env.SHOPEE_SECRET?.trim();
+  if (!appId || !appSecret) return null;
+  return { appId, appSecret };
+}
+
 // O JID do próprio bot vem como "5511999999999:12@s.whatsapp.net" — o sufixo de
 // device (":12") precisa sair, senão o envio falha.
 function getOwnJid(sock) {
@@ -847,6 +860,44 @@ async function resolveMercadoLivreConversion(sessionId, message) {
 
   console.log(`[${sessionId}] 🔗 Link(s) do Mercado Livre convertido(s) para afiliado.`);
   return { action: "rebuild", caption: result.text, imageUrl: result.imageUrl };
+}
+
+/**
+ * Decide o que fazer com os links da Shopee de uma promoção. Roda DEPOIS do
+ * Mercado Livre, sobre o texto já convertido.
+ *
+ * @param {string} sessionId nome da margem
+ * @param {string} text texto/legenda (já com os links do ML trocados, se houver)
+ * @returns {Promise<{ action: "forward" } | { action: "rebuild", caption: string } | { action: "block", errorType: string }>}
+ *   - forward: sem link da Shopee, ou recurso desligado (sem credenciais globais) → segue o fluxo.
+ *   - rebuild: links convertidos → o texto mudou.
+ *   - block:   conversão falhou (inclui "produto fora do programa") → não enviar.
+ */
+async function resolveShopeeConversion(sessionId, text) {
+  const creds = getShopeeCredentials(sessionId);
+  if (!creds) return { action: "forward" };
+
+  if (!text) return { action: "forward" };
+
+  const result = await convertShopeeMessageText(text, creds, sessionId);
+
+  if (!result.hadShopee) return { action: "forward" };
+
+  if (result.failed) {
+    if (result.failed.type === SHOPEE_ERROR.NOT_IN_PROGRAM) {
+      console.warn(
+        `[${sessionId}] 🛑 Shopee: NÃO enviado — produto fora do programa de afiliados (${result.failed.url})`,
+      );
+    } else {
+      console.warn(
+        `[${sessionId}] 🛑 Shopee: conversão falhou (${result.failed.type}) para ${result.failed.url}`,
+      );
+    }
+    return { action: "block", errorType: result.failed.type };
+  }
+
+  console.log(`[${sessionId}] 🔗 Link(s) da Shopee convertido(s) para afiliado.`);
+  return { action: "rebuild", caption: result.text };
 }
 
 export async function resetAllSessionStatus() {
@@ -1249,36 +1300,56 @@ export async function startSession(sessionId) {
 
         // Modo da margem (config.convertLink):
         // - false → repassa TODAS as mensagens como estão (sem conversão).
-        // - true  → repassa SÓ promoções do Mercado Livre, com o link trocado pelo
-        //   de afiliado do dono. Se a conversão falhar, nada é enviado (nem WhatsApp
-        //   nem Telegram) para não divulgar a oferta sem a tag; se a mensagem não for
-        //   do Mercado Livre, ela é ignorada.
+        // - true  → repassa SÓ promoções que dá para converter (Mercado Livre OU
+        //   Shopee), com o link trocado pelo de afiliado do dono. Se a conversão
+        //   falhar, nada é enviado (nem WhatsApp nem Telegram) para não divulgar a
+        //   oferta sem a tag; se a mensagem não tiver link convertível, é ignorada.
         let outgoingText = text;
         let needsRebuild = false;
         let imagemDoProdutoUrl = null;
 
         if (currentConfig.convertLink === true) {
-          const conversion = await resolveMercadoLivreConversion(sessionId, frozenMsg);
+          // 1) Mercado Livre.
+          const ml = await resolveMercadoLivreConversion(sessionId, frozenMsg);
 
-          if (conversion.action === "block") {
+          if (ml.action === "block") {
             console.log(
               `[${sessionId}] 🛑 Envio cancelado: promoção do Mercado Livre não convertida (ID: ${msg.key.id})`,
             );
-            await notifyCredentialsExpired(currentSock, sessionId, conversion.errorType);
+            await notifyCredentialsExpired(currentSock, sessionId, ml.errorType);
             return;
           }
 
-          if (conversion.action === "forward") {
+          const hadMl = ml.action === "rebuild";
+          let workingText = hadMl ? ml.caption : getMessageCaption(frozenMsg);
+          if (hadMl) imagemDoProdutoUrl = ml.imageUrl;
+
+          // 2) Shopee, sobre o texto já com o link do ML trocado. No-op quando
+          //    SHOPEE_APP_ID/SHOPEE_SECRET não estão no .env.
+          const shp = await resolveShopeeConversion(sessionId, workingText);
+
+          if (shp.action === "block") {
+            // resolveShopeeConversion já registrou o motivo no log (inclui o
+            // caso "produto fora do programa de afiliados").
             console.log(
-              `[${sessionId}] ⏭️ Mensagem sem link do Mercado Livre ignorada (margem de conversão) (ID: ${msg.key.id})`,
+              `[${sessionId}] 🛑 Envio cancelado: promoção da Shopee não convertida (ID: ${msg.key.id})`,
             );
             return;
           }
 
-          // action === "rebuild": links convertidos → texto muda, remonta depois.
-          outgoingText = conversion.caption;
+          const hadShopee = shp.action === "rebuild";
+          if (hadShopee) workingText = shp.caption;
+
+          // 3) Modo conversão: só repassa promo que deu para converter.
+          if (!hadMl && !hadShopee) {
+            console.log(
+              `[${sessionId}] ⏭️ Mensagem sem link convertível (Mercado Livre/Shopee) ignorada (margem de conversão) (ID: ${msg.key.id})`,
+            );
+            return;
+          }
+
+          outgoingText = workingText;
           needsRebuild = true;
-          imagemDoProdutoUrl = conversion.imageUrl;
         }
 
         // Referrals do criador da promo (ex.: "Salve um amigo") são removidos
