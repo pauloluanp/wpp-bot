@@ -1,4 +1,4 @@
-import { startSession, stopSession, getQRCode, updateSessionConfig, deleteSession, getPendingMessages, sendPromoMessage } from '../../manager.js';
+import { startSession, stopSession, getQRCode, updateSessionConfig, deleteSession, getPendingMessages, sendPromoMessage, sendNoticeMessage } from '../../manager.js';
 
 export default class SessionService {
     constructor(sessionRepository) {
@@ -168,5 +168,21 @@ export default class SessionService {
         }
 
         return sendPromoMessage(sessionId, { imageBase64, caption });
+    }
+
+    /**
+     * Dispara um aviso (convite de grupo) direto nos grupos de destino da margem.
+     * A checagem de posse é a mesma do `sendPromo`: sem ela qualquer usuário
+     * logado dispararia pela margem de outro.
+     */
+    async sendNotice(sessionId, userId, { message }) {
+        const existsSession = await this.sessionRepository.getSessionById(sessionId, userId);
+        if (!existsSession || existsSession.length === 0) {
+            const error = new Error('Sessão não encontrada');
+            error.statusCode = 404;
+            throw error;
+        }
+
+        return sendNoticeMessage(sessionId, { message });
     }
 }

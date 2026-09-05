@@ -59,6 +59,12 @@ router.get("/sessions/:id/pending", authMiddleware, sessionController.getPending
 // da margem (sessions.sessionId).
 router.post("/sessions/:id/send", authMiddleware, sessionController.sendPromo);
 
+// Disparo manual de AVISO (tela "Criador de Aviso"): recebe a mensagem pronta e
+// envia DIRETO nos grupos de destino (WhatsApp + Telegram). Não passa pelo grupo
+// de origem de propósito — o fluxo de repasse descartaria a mensagem em margem
+// de conversão e apagaria a linha do convite. `:id` é o nome da margem.
+router.post("/sessions/:id/send-notice", authMiddleware, sessionController.sendNotice);
+
 // Credenciais do Mercado Livre por margem (o service exige plano premium e que a
 // margem pertença ao usuário). `:id` é o nome da margem (sessions.sessionId).
 router.get("/sessions/:id/ml-credentials", authMiddleware, mlCredentialController.getCredentials);

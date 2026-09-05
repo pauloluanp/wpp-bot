@@ -34,6 +34,19 @@ Outros pontos:
 - `src/manager.js` — orquestra as conexões Baileys (WhatsApp) + bots Telegram em memória
   (Maps de sessões, QR codes, status, agendamento). Regras de envio: `MSG_PER_WINDOW`,
   `WINDOW_MS`, `DEFAULT_DELAY_MS`.
+
+### Dois disparos manuais, com caminhos diferentes
+
+- **Promoção** (`POST /sessions/:id/send` → `sendPromoMessage`): publica no grupo de
+  **origem** e deixa o fluxo normal (`messages.upsert`) repassar, com conversão de link,
+  convite da margem e agendamento anti-ban.
+- **Aviso** (`POST /sessions/:id/send-notice` → `sendNoticeMessage`): vai **direto** aos
+  grupos de destino. Não pode passar pela origem porque o repasse (a) descarta a mensagem
+  em margem de conversão (sem link do ML/Shopee) e (b) `removeExistingGroupInvite` apagaria
+  a linha do `chat.whatsapp.com`, que é o ponto central do aviso. Como não passa pelo
+  agendador, tem ritmo próprio: `AVISO_TYPING_*` e `AVISO_GAP_*`.
+  O card de convite é montado à mão (`montarLinkPreviewDeConvite`) — `link-preview-js` não
+  é dependência do projeto, então texto puro **nunca** gera preview automático.
 - `src/middlewares/auth.middleware.js` — valida JWT.
 - `src/db/` — `schema.js` (tabelas: `plans`, `users`, `folders`, `sessions`), `index.js`
   (conexão), `repair-schema.js`, `seed.js`, `set-user-plan.js`.

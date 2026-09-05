@@ -40,6 +40,18 @@ const MSG_PER_WINDOW = 3;
 const WINDOW_MS = 15 * 60 * 1000;
 const DEFAULT_DELAY_MS = 2 * 60 * 1000;
 
+// Ritmo do disparo de AVISO (fan-out direto nos grupos de destino). A digitação
+// copia a do repasse normal (2-4s); a pausa entre grupos não existe no repasse
+// porque lá cada promo já vem espaçada pelo agendador — o aviso é o MESMO texto
+// replicado em N grupos, então precisa do intervalo próprio.
+const AVISO_TYPING_MIN_MS = 2000;
+const AVISO_TYPING_MAX_MS = 4000;
+const AVISO_GAP_MIN_MS = 4000;
+const AVISO_GAP_MAX_MS = 9000;
+const AVISO_TELEGRAM_GAP_MS = 1200;
+// `groupGetInviteInfo` não aceita timeout e cai no default do Baileys (60s).
+const AVISO_INVITE_INFO_TIMEOUT_MS = 8000;
+
 function getMessageKey(sessionId, messageId) {
   return `${sessionId}:${messageId}`;
 }
@@ -1923,4 +1935,356 @@ export async function sendPromoMessage(sessionId, { imageBase64, caption }) {
 
     return { sent: [], failed: [{ name: destino.name, error: mensagem }] };
   }
+}
+
+// ---------------------------------------------------------------------------
+// Disparo manual de AVISO (tela "Criador de Aviso")
+// ---------------------------------------------------------------------------
+
+// Link de convite de grupo do WhatsApp. Aceita a forma com `/invite/` porque
+// convites antigos ainda circulam nesse formato. O trecho final captura a query
+// string (ex.: `?mode=gi_t`): o `matched-text` do preview precisa ser a URL
+// EXATA que aparece no texto, senão o WhatsApp não ancora o card.
+const CONVITE_WPP_REGEX =
+  /https?:\/\/chat\.whatsapp\.com\/(?:invite\/)?([A-Za-z0-9_-]{15,40})[^\s<>"')\]}]*/i;
+
+// Subtítulo do card, igual ao que o WhatsApp mostra num convite de grupo.
+const DESCRICAO_CONVITE = "Convite para conversa em grupo";
+
+function esperar(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function delayAleatorio(min, max) {
+  return min + Math.floor(Math.random() * (max - min + 1));
+}
+
+/**
+ * Corre a promise contra um timeout. Necessário porque `groupGetInviteInfo` não
+ * aceita override de timeout e cai no `defaultQueryTimeoutMs` do Baileys (60s) —
+ * numa rota HTTP síncrona isso seguraria a resposta por um minuto.
+ */
+function comTimeout(promise, ms, rotulo) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error(`${rotulo}: tempo esgotado`)), ms),
+    ),
+  ]);
+}
+
+/**
+ * Monta o `extendedTextMessage` CRU do aviso, com o card de convite de grupo:
+ * foto do grupo, nome do grupo e o rótulo "Convite para conversa em grupo".
+ *
+ * Por que o formato cru e não `sendMessage({ text, linkPreview })`:
+ *
+ * 1. O preview automático do Baileys depende de `link-preview-js`, que não é
+ *    dependência deste projeto — a falha do import é engolida e a mensagem sai
+ *    sem card nenhum.
+ * 2. O que faz o WhatsApp desenhar o card de CONVITE (com o botão "Acessar
+ *    grupo") e não um card de link comum é o campo `inviteLinkGroupType` do
+ *    proto. O `WAUrlInfo` aceito pelo `sendMessage` não tem slot para ele, então
+ *    só dá para preenchê-lo montando o conteúdo na mão — o mesmo caminho que o
+ *    repasse usa em `payloadComPreview`.
+ *
+ * Best-effort em camadas: cada falha degrada para um card mais simples e NUNCA
+ * impede o envio. Devolve `null` quando não há link de convite no texto.
+ */
+async function montarConteudoDeConvite(sock, texto) {
+  const match = texto.match(CONVITE_WPP_REGEX);
+  if (!match) {
+    console.log("ℹ️  Aviso sem link de convite: enviado como texto puro.");
+    return null;
+  }
+
+  const [url, codigo] = match;
+
+  let metadata = null;
+  try {
+    metadata = await comTimeout(
+      sock.groupGetInviteInfo(codigo),
+      AVISO_INVITE_INFO_TIMEOUT_MS,
+      "convite",
+    );
+    console.log(
+      `🔎 Convite ${codigo} resolvido: "${metadata?.subject}" (${metadata?.id})`,
+    );
+  } catch (error) {
+    // Convite revogado, inválido ou query pendurada. Ainda vale montar o card
+    // genérico: o link continua clicável e o rótulo do convite aparece.
+    console.warn(
+      `⚠️ Não foi possível resolver o convite ${codigo}: ${error.message}`,
+    );
+  }
+
+  // `title` é o que o WhatsApp mostra em destaque; sem conteúdo ele não desenha
+  // o card. `inviteLinkGroupType: 0` (DEFAULT) é o que o torna um card de
+  // convite de grupo em vez de um preview de link comum.
+  const conteudo = {
+    text: texto,
+    matchedText: url,
+    title: metadata?.subject || DESCRICAO_CONVITE,
+    description: DESCRICAO_CONVITE,
+    previewType: 0,
+    inviteLinkGroupType: 0,
+  };
+
+  const campos = await camposDeThumbnailDoGrupo(sock, metadata, url);
+  return { extendedTextMessage: { ...conteudo, ...campos } };
+}
+
+/** `og:image` da página pública do convite. Mesmos padrões do aggregatorResolver. */
+const OG_IMAGE_REGEX = [
+  /<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i,
+  /<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["']/i,
+];
+
+/**
+ * Foto do grupo pela página pública do convite (`chat.whatsapp.com/<código>`),
+ * que expõe a imagem na `og:image`.
+ *
+ * É o caminho que funciona quando o bot NÃO é membro do grupo divulgado — o
+ * caso normal de um aviso, e a razão de `profilePictureUrl` falhar sozinho.
+ */
+async function fotoDoGrupoPorConvite(url) {
+  try {
+    const response = await fetchWithTimeout(url, {
+      headers: { "user-agent": USER_AGENT, accept: "text/html" },
+    });
+    if (!response.ok) {
+      console.warn(`⚠️ Página do convite respondeu ${response.status}.`);
+      return null;
+    }
+
+    const html = await response.text();
+    for (const regex of OG_IMAGE_REGEX) {
+      const match = html.match(regex);
+      // `&amp;` quebra a query string da URL do CDN do WhatsApp.
+      if (match) return match[1].replace(/&amp;/g, "&");
+    }
+
+    console.warn("⚠️ Página do convite sem og:image.");
+    return null;
+  } catch (error) {
+    console.warn(`⚠️ Falha ao ler a página do convite: ${error.message}`);
+    return null;
+  }
+}
+
+/**
+ * Baixa a foto do grupo e a sobe como thumbnail do card. Devolve `{}` em
+ * qualquer falha — o card sai sem imagem, o que é bem melhor que não sair.
+ */
+async function camposDeThumbnailDoGrupo(sock, metadata, urlDoConvite) {
+  let fotoUrl = null;
+
+  // 1) Pelo jid, quando o bot é membro do grupo. `profilePictureUrl` LANÇA
+  //    quando o servidor recusa — daí o try/catch em vez de checar undefined.
+  if (metadata?.id) {
+    try {
+      fotoUrl = await sock.profilePictureUrl(metadata.id, "image");
+    } catch (error) {
+      console.log(
+        `ℹ️  Foto não veio pelo jid (${error.message}); tentando a página do convite.`,
+      );
+    }
+  }
+
+  // 2) Pela página pública do convite — não exige ser membro.
+  if (!fotoUrl) fotoUrl = await fotoDoGrupoPorConvite(urlDoConvite);
+
+  if (!fotoUrl) {
+    console.warn("⚠️ Sem foto do grupo — o card sai sem imagem.");
+    return {};
+  }
+
+  const buffer = await baixarImagemDoProduto(fotoUrl);
+  if (!buffer) return {};
+
+  try {
+    // Os mesmos campos crus que o repasse usa para preservar o preview.
+    return (await camposDePreviewDeImagem(sock, buffer)) || {};
+  } catch (error) {
+    console.warn(`⚠️ Falha ao subir a foto do grupo: ${error.message}`);
+    return {};
+  }
+}
+
+/**
+ * Resolve os grupos de destino da margem para o aviso.
+ *
+ * Não dá para confiar só no `resolveGroupsByPrefix`: ele desiste antes de gravar
+ * os destinos quando o grupo de ORIGEM não é encontrado. O aviso não depende da
+ * origem, então nesse caso os destinos são resolvidos aqui mesmo.
+ */
+async function resolverDestinosWhatsApp(sock, sessionId) {
+  let config = sessionConfigs.get(sessionId);
+  if (config?.targetGroups?.length) return config.targetGroups;
+
+  await resolveGroupsByPrefix(sock, sessionId);
+  config = sessionConfigs.get(sessionId);
+  if (config?.targetGroups?.length) return config.targetGroups;
+
+  if (!config?.targetGroupPrefix) return [];
+
+  const chats = await sock.groupFetchAllParticipating();
+  const prefixo = config.targetGroupPrefix.toLowerCase();
+  const destinos = Object.values(chats)
+    .filter((g) => g.subject?.toLowerCase().startsWith(prefixo))
+    .map((g) => ({ id: g.id, name: g.subject }));
+
+  // Grava direto no Map: `updateSessionConfig` zeraria `targetGroups` ao receber
+  // um prefixo, que é justamente o que acabamos de resolver.
+  if (destinos.length) {
+    sessionConfigs.set(sessionId, { ...config, targetGroups: destinos });
+  }
+
+  return destinos;
+}
+
+/**
+ * Publica um AVISO (convite de grupo) DIRETO em todos os grupos de destino da
+ * margem — WhatsApp e Telegram.
+ *
+ * Ao contrário do `sendPromoMessage`, não passa pelo grupo de origem nem pelo
+ * fluxo de repasse, e isso é essencial:
+ *
+ * - em modo conversão (`config.convertLink`) o repasse DESCARTA mensagem sem
+ *   link do Mercado Livre/Shopee — o aviso nunca chegaria aos destinos;
+ * - `applyGroupInvite`/`removeExistingGroupInvite` apagariam justamente a linha
+ *   do `chat.whatsapp.com`, que é o ponto central do aviso.
+ *
+ * Cada destino tem seu próprio try/catch: um grupo que falha entra em `failed` e
+ * o disparo segue nos demais.
+ */
+export async function sendNoticeMessage(sessionId, { message }) {
+  const texto = String(message || "").trim();
+  if (!texto) {
+    throw erroDeEnvio("A mensagem do aviso não pode ser vazia.", 400);
+  }
+
+  const sock = sessions.get(sessionId);
+  if (!sock || sessionStatus.get(sessionId) !== "CONNECTED") {
+    throw erroDeEnvio(
+      "A margem não está conectada. Inicie a margem e leia o QR Code antes de enviar.",
+      409,
+    );
+  }
+
+  const destinosWpp = await resolverDestinosWhatsApp(sock, sessionId);
+  const config = sessionConfigs.get(sessionId);
+  const destinosTelegram = resolveTelegramGroupsByPrefix(
+    sessionId,
+    config?.targetGroupPrefix,
+  );
+
+  // O grupo de origem fica de fora mesmo quando casa com o prefixo de destino:
+  // `sendMessage` emite o `messages.upsert` local e o aviso seria repassado de
+  // novo pelo fluxo de promoção.
+  const destinos = destinosWpp.filter((t) => t.id !== config?.sourceGroup);
+
+  if (!destinos.length && !destinosTelegram.length) {
+    throw erroDeEnvio(
+      `Nenhum grupo de destino encontrado para o prefixo "${config?.targetGroupPrefix || ""}".`,
+      409,
+    );
+  }
+
+  // Montado uma vez só: o upload do thumbnail é reusado em todos os grupos.
+  const conteudo = await montarConteudoDeConvite(sock, texto);
+
+  const sent = [];
+  const failed = [];
+
+  console.log("\n" + "=".repeat(60));
+  console.log(`📣 [${sessionId}] DISPARANDO AVISO`);
+  console.log("=".repeat(60));
+  console.log(`📥 Grupos de destino: ${destinos.length}`);
+  console.log(`📨 Grupos no Telegram: ${destinosTelegram.length}`);
+  console.log(`🔗 Card de convite: ${conteudo ? "sim" : "não (texto puro)"}`);
+  if (conteudo) {
+    const campos = conteudo.extendedTextMessage;
+    console.log(`   Título: "${campos.title}"`);
+    console.log(`   Miniatura: ${campos.jpegThumbnail ? "sim" : "não"}`);
+  }
+  console.log("=".repeat(60) + "\n");
+
+  for (let i = 0; i < destinos.length; i++) {
+    const target = destinos[i];
+
+    try {
+      await simulateTyping(
+        sock,
+        target.id,
+        delayAleatorio(AVISO_TYPING_MIN_MS, AVISO_TYPING_MAX_MS),
+      );
+
+      if (conteudo) {
+        // `relayMessage` (e não `sendMessage`) porque só o conteúdo cru carrega
+        // o card de convite. Efeito colateral bem-vindo: não emite o
+        // `messages.upsert` local, então o aviso nunca entra no fluxo de repasse.
+        const waMsg = generateWAMessageFromContent(target.id, conteudo, {
+          userJid: getOwnJid(sock) || undefined,
+        });
+        await sock.relayMessage(target.id, waMsg.message, {
+          messageId: waMsg.key.id,
+        });
+      } else {
+        await sock.sendMessage(target.id, { text: texto });
+      }
+
+      sent.push({ id: target.id, name: target.name, canal: "whatsapp" });
+      console.log(`✅ [${sessionId}] Aviso enviado em ${target.name}`);
+    } catch (err) {
+      const mensagem = err.message || String(err);
+      failed.push({ name: target.name, error: mensagem });
+      console.error(
+        `❌ [${sessionId}] Falha ao enviar o aviso em ${target.name}: ${mensagem}`,
+      );
+
+      // Socket morto: não adianta insistir nos que faltam.
+      if (mensagem.includes("Closed") || err.output?.statusCode === 428) {
+        sessionStatus.set(sessionId, "DISCONNECTED");
+        for (const restante of destinos.slice(i + 1)) {
+          failed.push({ name: restante.name, error: "Conexão encerrada." });
+        }
+        break;
+      }
+    }
+
+    if (i < destinos.length - 1) {
+      await esperar(delayAleatorio(AVISO_GAP_MIN_MS, AVISO_GAP_MAX_MS));
+    }
+  }
+
+  if (destinosTelegram.length) {
+    const telegram = getTelegramBot(sessionId);
+    if (telegram) {
+      for (const chat of destinosTelegram) {
+        try {
+          await sendTelegramMessage(telegram.bot, chat.id, {
+            type: "text",
+            text: texto,
+          });
+          sent.push({
+            id: String(chat.id),
+            name: chat.title,
+            canal: "telegram",
+          });
+          console.log(`✅ [${sessionId}] Aviso enviado no Telegram: ${chat.title}`);
+        } catch (err) {
+          const mensagem = err.message || String(err);
+          failed.push({ name: chat.title, error: mensagem });
+          console.error(
+            `❌ [${sessionId}] Falha no Telegram (${chat.title}): ${mensagem}`,
+          );
+        }
+
+        await esperar(AVISO_TELEGRAM_GAP_MS);
+      }
+    }
+  }
+
+  return { sent, failed };
 }

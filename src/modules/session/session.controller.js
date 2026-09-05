@@ -178,6 +178,25 @@ export default class SessionController {
     }
   };
 
+  sendNotice = async (req, res) => {
+    const { id: sessionId } = req.params;
+    const userId = req.user.id;
+    const { message } = req.body;
+
+    if (!message || !message.trim()) {
+      return res.status(400).json({ error: 'message obrigatória' });
+    }
+
+    try {
+      const result = await this.sessionService.sendNotice(sessionId, userId, {
+        message: message.trim(),
+      });
+      return res.json(result);
+    } catch (error) {
+      return res.status(error.statusCode || 500).json({ error: error.message });
+    }
+  };
+
   getPendingMessages = async (req, res) => {
     const { id: sessionId } = req.params;
     const userId = req.user.id;
