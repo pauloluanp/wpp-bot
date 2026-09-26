@@ -1,11 +1,17 @@
 import express from "express";
 import cors from "cors";
+import { silenceLibsignal } from "./lib/logging/silenceLibsignal.js";
 import routes from "./routes.js";
 import {
   resetAllSessionStatus,
   autoRestartSessions,
   initTelegramBot,
 } from "./manager.js";
+
+// Antes de tudo: o libsignal (dentro do Baileys) loga o objeto de sessão inteiro
+// no console global, incluindo privKey/rootKey, e paga util.inspect por evento.
+// Ver o comentário do módulo para o porquê.
+silenceLibsignal();
 
 const app = express();
 
