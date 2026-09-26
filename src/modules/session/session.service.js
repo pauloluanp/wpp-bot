@@ -1,4 +1,4 @@
-import { startSession, stopSession, getQRCode, updateSessionConfig, deleteSession, getPendingMessages, sendPromoMessage, sendNoticeMessage } from '../../manager.js';
+import { startSession, stopSession, getQRCode, updateSessionConfig, deleteSession, getPendingMessages, cancelPendingMessage, sendPendingMessageNow, sendPromoMessage, sendNoticeMessage } from '../../manager.js';
 
 export default class SessionService {
     constructor(sessionRepository) {
@@ -152,6 +152,30 @@ export default class SessionService {
         }
 
         return getPendingMessages(sessionId);
+    }
+
+    /**
+     * Botões da Fila no painel: "Encerrar" (tira da fila sem enviar) e "Enviar
+     * agora" (dispara já). Mesma checagem de posse do `sendPromo` — sem ela um
+     * usuário logado mexeria na fila da margem de outro.
+     */
+    async cancelPendingMessage(sessionId, userId, msgId) {
+        await this.#garantirMargemDoUsuario(sessionId, userId);
+        return cancelPendingMessage(sessionId, msgId);
+    }
+
+    async sendPendingMessageNow(sessionId, userId, msgId) {
+        await this.#garantirMargemDoUsuario(sessionId, userId);
+        return sendPendingMessageNow(sessionId, msgId);
+    }
+
+    async #garantirMargemDoUsuario(sessionId, userId) {
+        const existsSession = await this.sessionRepository.getSessionById(sessionId, userId);
+        if (!existsSession || existsSession.length === 0) {
+            const error = new Error('Sessão não encontrada');
+            error.statusCode = 404;
+            throw error;
+        }
     }
 
     /**

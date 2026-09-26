@@ -16,7 +16,12 @@ const { planController } = makePlanModule();
 const mlCredentialController = makeMlCredentialController();
 
 // Criação/listagem de usuários é restrita a administradores.
-router.post("/users", authMiddleware, adminMiddleware, userController.createUser);
+router.post(
+  "/users",
+  authMiddleware,
+  adminMiddleware,
+  userController.createUser,
+);
 router.get("/users", authMiddleware, adminMiddleware, userController.listUsers);
 router.post("/login", userController.login);
 
@@ -40,19 +45,53 @@ router.delete("/folders/:id", authMiddleware, folderController.deleteFolder);
 router.post("/sessions", authMiddleware, sessionController.createSession);
 router.get("/sessions", authMiddleware, sessionController.listSessions);
 
-router.patch("/sessions/:id/start", authMiddleware, sessionController.startSession);
-router.patch("/sessions/:id/stop", authMiddleware, sessionController.stopSession);
+router.patch(
+  "/sessions/:id/start",
+  authMiddleware,
+  sessionController.startSession,
+);
+router.patch(
+  "/sessions/:id/stop",
+  authMiddleware,
+  sessionController.stopSession,
+);
 
 router.delete("/sessions/:id", authMiddleware, sessionController.deleteSession);
 
 router.get("/sessions/:id/qrcode", authMiddleware, sessionController.getQRCode);
 
-router.post("/sessions/:id/config", authMiddleware, sessionController.updateSessionConfig);
+router.post(
+  "/sessions/:id/config",
+  authMiddleware,
+  sessionController.updateSessionConfig,
+);
 
 // Link de grupo (convite) da margem — anexado/substituído no final das mensagens.
-router.put("/sessions/:id/group-invite", authMiddleware, sessionController.updateGroupInvite);
+router.put(
+  "/sessions/:id/group-invite",
+  authMiddleware,
+  sessionController.updateGroupInvite,
+);
 
-router.get("/sessions/:id/pending", authMiddleware, sessionController.getPendingMessages);
+router.get(
+  "/sessions/:id/pending",
+  authMiddleware,
+  sessionController.getPendingMessages,
+);
+
+// Botões da Fila no painel — equivalem a responder a promo no grupo de origem
+// com "encerrar" (tira da fila sem enviar) e "enviar" (dispara na hora).
+// `:id` é o nome da margem; `:msgId` é o id devolvido pelo GET acima.
+router.delete(
+  "/sessions/:id/pending/:msgId",
+  authMiddleware,
+  sessionController.cancelPendingMessage,
+);
+router.post(
+  "/sessions/:id/pending/:msgId/send",
+  authMiddleware,
+  sessionController.sendPendingMessageNow,
+);
 
 // Disparo manual de promoção (tela "Criar promoção"): recebe a imagem em base64
 // e a legenda já pronta, e envia nos grupos de destino da margem. `:id` é o nome
@@ -63,12 +102,24 @@ router.post("/sessions/:id/send", authMiddleware, sessionController.sendPromo);
 // envia DIRETO nos grupos de destino (WhatsApp + Telegram). Não passa pelo grupo
 // de origem de propósito — o fluxo de repasse descartaria a mensagem em margem
 // de conversão e apagaria a linha do convite. `:id` é o nome da margem.
-router.post("/sessions/:id/send-notice", authMiddleware, sessionController.sendNotice);
+router.post(
+  "/sessions/:id/send-notice",
+  authMiddleware,
+  sessionController.sendNotice,
+);
 
 // Credenciais do Mercado Livre por margem (o service exige plano premium e que a
 // margem pertença ao usuário). `:id` é o nome da margem (sessions.sessionId).
-router.get("/sessions/:id/ml-credentials", authMiddleware, mlCredentialController.getCredentials);
-router.put("/sessions/:id/ml-credentials", authMiddleware, mlCredentialController.saveCredentials);
+router.get(
+  "/sessions/:id/ml-credentials",
+  authMiddleware,
+  mlCredentialController.getCredentials,
+);
+router.put(
+  "/sessions/:id/ml-credentials",
+  authMiddleware,
+  mlCredentialController.saveCredentials,
+);
 
 router.get("/telegram/groups", async (req, res) => {
   try {

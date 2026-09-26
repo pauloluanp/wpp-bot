@@ -207,4 +207,26 @@ export default class SessionController {
       return res.status(500).json({ error: error.message });
     }
   };
+
+  cancelPendingMessage = async (req, res) => {
+    const { id: sessionId, msgId } = req.params;
+    const userId = req.user.id;
+    try {
+      const result = await this.sessionService.cancelPendingMessage(sessionId, userId, msgId);
+      return res.json(result);
+    } catch (error) {
+      return res.status(error.statusCode || 500).json({ error: error.message });
+    }
+  };
+
+  sendPendingMessageNow = async (req, res) => {
+    const { id: sessionId, msgId } = req.params;
+    const userId = req.user.id;
+    try {
+      const result = await this.sessionService.sendPendingMessageNow(sessionId, userId, msgId);
+      return res.json(result);
+    } catch (error) {
+      return res.status(error.statusCode || 500).json({ error: error.message });
+    }
+  };
 }

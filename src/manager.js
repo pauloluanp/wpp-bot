@@ -56,6 +56,19 @@ function getMessageKey(sessionId, messageId) {
   return `${sessionId}:${messageId}`;
 }
 
+// Tira uma mensagem da fila e desarma o timer dela. Compartilhado pelos comandos
+// "enviar"/"encerrar" (resposta no WhatsApp) e pelos botões da Fila no painel.
+// Devolve o item, ou null se ele já saiu da fila (enviado, cancelado ou limpo).
+function retirarDaFila(sessionId, msgId) {
+  const pendingKey = getMessageKey(sessionId, msgId);
+  const pending = pendingMessages.get(pendingKey);
+  if (!pending || pending.sessionId !== sessionId) return null;
+
+  clearTimeout(pending.timerId);
+  pendingMessages.delete(pendingKey);
+  return pending;
+}
+
 function markMessageAsProcessed(sessionId, messageId) {
   const key = getMessageKey(sessionId, messageId);
   if (processedMessages.has(key)) return false;
@@ -1178,21 +1191,17 @@ export async function startSession(sessionId) {
         const command = text.trim().toLowerCase();
 
         if (command === "enviar" || command === "encerrar") {
-          const pendingKey = getMessageKey(sessionId, repliedId);
-          const pending = pendingMessages.get(pendingKey);
-          if (pending && pending.sessionId === sessionId) {
-            clearTimeout(pending.timerId);
+          const pending = retirarDaFila(sessionId, repliedId);
+          if (pending) {
             if (command === "enviar") {
               console.log(
                 `\n[${sessionId}] 🚀 FORÇANDO ENVIO IMEDIATO da mensagem ${repliedId}`,
               );
-              pendingMessages.delete(pendingKey);
               await pending.forceSend(); // executa o envio agora
             } else if (command === "encerrar") {
               console.log(
                 `\n[${sessionId}] 🛑 CANCELANDO ENVIO da mensagem ${repliedId}`,
               );
-              pendingMessages.delete(pendingKey);
             }
           } else {
             console.log(
@@ -1806,6 +1815,52 @@ export function getPendingMessages(sessionId) {
     }
   }
   return pending;
+}
+
+// ---------------------------------------------------------------------------
+// Ações da Fila pelo painel — equivalem aos comandos "encerrar"/"enviar"
+// respondidos no grupo de origem, mas identificam a mensagem pelo msgId.
+// ---------------------------------------------------------------------------
+
+export function cancelPendingMessage(sessionId, msgId) {
+  const pending = retirarDaFila(sessionId, msgId);
+  if (!pending) {
+    throw erroDeEnvio("Mensagem já enviada ou não encontrada na fila", 404);
+  }
+
+  console.log(`\n[${sessionId}] 🛑 CANCELANDO ENVIO da mensagem ${msgId} (painel)`);
+  return { ok: true };
+}
+
+export function sendPendingMessageNow(sessionId, msgId) {
+  // Checa ANTES de tirar da fila: desconectado, o sendRoutine abortaria em
+  // silêncio e a mensagem sumiria sem ser enviada. (Pelo WhatsApp isso não
+  // acontece — o comando só chega com a margem conectada.)
+  if (sessionStatus.get(sessionId) !== "CONNECTED") {
+    throw erroDeEnvio("Margem não conectada", 409);
+  }
+
+  const pending = retirarDaFila(sessionId, msgId);
+  if (!pending) {
+    throw erroDeEnvio("Mensagem já enviada ou não encontrada na fila", 404);
+  }
+
+  console.log(
+    `\n[${sessionId}] 🚀 FORÇANDO ENVIO IMEDIATO da mensagem ${msgId} (painel)`,
+  );
+
+  // Sem await: o envio simula digitação em cada grupo de destino e levaria
+  // dezenas de segundos — o painel só precisa saber que começou. O catch é
+  // obrigatório: parte do sendRoutine roda fora do try e uma rejeição solta
+  // derrubaria o processo (e, com ele, a fila inteira em memória).
+  pending.forceSend().catch((err) => {
+    console.error(
+      `[${sessionId}] ❌ Erro no envio imediato da mensagem ${msgId}:`,
+      err?.message || err,
+    );
+  });
+
+  return { ok: true };
 }
 
 // ---------------------------------------------------------------------------
